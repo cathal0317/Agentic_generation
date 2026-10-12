@@ -19,6 +19,7 @@ class Conversation(Base):
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     scenario: Mapped[str] = mapped_column(Text)
     user_personality: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    ## TODO decide initial condition boundary
     # Private generator inputs belong here, not in initial_context.
     initial_condition: Mapped[dict[str, Any]] = mapped_column(JSONB)
     # Only information explicitly given to the assistant belongs here.

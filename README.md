@@ -43,6 +43,12 @@ uv run agentic-generation validate-scenario examples/user_healthcheck.json
 uv run agentic-generation preview-prompts examples/user_healthcheck.json
 ```
 
+## Conversation loop
+
+The in-memory conversation loop alternates injected user and assistant text
+generators for the configured number of exchanges. It validates generated text
+but does not yet call a provider, persist turns, or produce speech metadata.
+
 `uv.lock` records the resolved Python dependencies. `.env` contains local
 configuration and is ignored by Git. The example password is for local
 development only. Both Compose and Python read the same `POSTGRES_*` settings,
