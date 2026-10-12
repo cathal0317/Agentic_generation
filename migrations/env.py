@@ -5,6 +5,7 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy.engine import Connection
 
+import agentic_generation.models  # noqa: F401
 from agentic_generation.config import Settings
 from agentic_generation.db import Base, create_db_engine
 

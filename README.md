@@ -1,6 +1,6 @@
 # Agentic generation
 
-Conversation generation for the Senimate emotional speech dataset.
+Conversation generation for emotional speech dataset.
 
 This first patch sets up the Python package, local PostgreSQL, configuration, and
 migration history. Its first migration enables pgvector. Conversation generation
