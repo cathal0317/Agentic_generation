@@ -30,15 +30,17 @@ uv run agentic-generation check-db
 ```
 
 The last command prints the database name, PostgreSQL and pgvector versions,
-the current migration (`0001_enable_pgvector`), and `"vector_check": "ok"`.
+the current migration (`0002_add_conversations`), and `"vector_check": "ok"`.
 It tests a cosine-distance operation without creating a permanent vector table.
 
-## Scenario validation
+## Scenario validation and prompt preview
 
-Validate a scenario file without database configuration or external services:
+Validate a scenario file and preview its prompts without database configuration
+or external services:
 
 ```bash
-uv run agentic-generation validate-scenario examples/meeting_postponed.json
+uv run agentic-generation validate-scenario examples/user_healthcheck.json
+uv run agentic-generation preview-prompts examples/user_healthcheck.json
 ```
 
 `uv.lock` records the resolved Python dependencies. `.env` contains local

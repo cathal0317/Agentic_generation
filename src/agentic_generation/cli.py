@@ -13,15 +13,16 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from agentic_generation.config import Settings
 from agentic_generation.db import DatabaseNotReady, check_database, create_db_engine
+from agentic_generation.prompts import build_assistant_system_prompt, build_user_system_prompt
 from agentic_generation.spec import ConversationSpec
 
 
-def validate_scenario(path: Path) -> int:
+def load_scenario(path: Path) -> ConversationSpec | None:
     try:
         raw_input = path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as error:
         print(f"Could not read scenario file '{path}': {error}", file=sys.stderr)
-        return 2
+        return None
 
     try:
         data = json.loads(raw_input)
@@ -30,17 +31,40 @@ def validate_scenario(path: Path) -> int:
             f"Invalid JSON in scenario file '{path}' at line {error.lineno}, column {error.colno}.",
             file=sys.stderr,
         )
-        return 2
+        return None
 
     try:
-        ConversationSpec.model_validate(data)
+        return ConversationSpec.model_validate(data)
     except ValidationError as error:
         detail = error.errors(include_url=False)[0]
         location = ".".join(str(part) for part in detail["loc"]) or "input"
         print(f"Invalid scenario input at '{location}': {detail['msg']}", file=sys.stderr)
+        return None
+
+
+def validate_scenario(path: Path) -> int:
+    if load_scenario(path) is None:
         return 2
 
     print(f"Scenario is valid: {path}")
+    return 0
+
+
+def preview_prompts(path: Path) -> int:
+    spec = load_scenario(path)
+    if spec is None:
+        return 2
+
+    print(
+        json.dumps(
+            {
+                "user_system_prompt": build_user_system_prompt(spec),
+                "assistant_system_prompt": build_assistant_system_prompt(),
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
     return 0
 
 
@@ -52,10 +76,16 @@ def main() -> int:
         "validate-scenario", help="Validate a conversation scenario JSON file"
     )
     validate_parser.add_argument("path", type=Path)
+    preview_parser = subcommands.add_parser(
+        "preview-prompts", help="Preview user and assistant system prompts"
+    )
+    preview_parser.add_argument("path", type=Path)
     args = parser.parse_args()
 
     if args.command == "validate-scenario":
         return validate_scenario(args.path)
+    if args.command == "preview-prompts":
+        return preview_prompts(args.path)
 
     if not Path("alembic.ini").is_file():
         print("Run this command from the repository root containing alembic.ini.", file=sys.stderr)
