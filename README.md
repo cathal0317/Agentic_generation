@@ -33,6 +33,14 @@ The last command prints the database name, PostgreSQL and pgvector versions,
 the current migration (`0001_enable_pgvector`), and `"vector_check": "ok"`.
 It tests a cosine-distance operation without creating a permanent vector table.
 
+## Scenario validation
+
+Validate a scenario file without database configuration or external services:
+
+```bash
+uv run agentic-generation validate-scenario examples/meeting_postponed.json
+```
+
 `uv.lock` records the resolved Python dependencies. `.env` contains local
 configuration and is ignored by Git. The example password is for local
 development only. Both Compose and Python read the same `POSTGRES_*` settings,

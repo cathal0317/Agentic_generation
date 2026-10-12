@@ -1,0 +1,7 @@
+{
+  "scenario": "You are Margaret, a 76-year-old woman who lives alone, taking part in your usual morning wellbeing check-in. Yesterday, you caught your foot on an uneven pavement while walking to the shops. You regained your balance without falling or hitting your head. You have no new pain or dizziness, but the incident frightened you more than you want to admit. You slept poorly because you kept thinking about what might have happened if nobody had been nearby. This morning, you had tea and toast but decided to skip your usual walk. You normally meet your friend Jean at a café on Mondays and look forward to it. You have not cancelled yet, although you are considering telling her that you are too busy. Your daughter lives nearby, but you hesitate to call because she is working, and you do not want her to think that you can no longer manage on your own.",
+  "user_personality": {
+    "communication_style": "reserved"
+  },
+  "max_exchanges": 8
+}

@@ -1,4 +1,4 @@
-"""Run from the repository root: agentic-generation check-db."""
+"""Command-line checks for scenario input and database readiness."""
 
 import argparse
 import json
@@ -13,13 +13,49 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from agentic_generation.config import Settings
 from agentic_generation.db import DatabaseNotReady, check_database, create_db_engine
+from agentic_generation.spec import ConversationSpec
+
+
+def validate_scenario(path: Path) -> int:
+    try:
+        raw_input = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        print(f"Could not read scenario file '{path}': {error}", file=sys.stderr)
+        return 2
+
+    try:
+        data = json.loads(raw_input)
+    except json.JSONDecodeError as error:
+        print(
+            f"Invalid JSON in scenario file '{path}' at line {error.lineno}, column {error.colno}.",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        ConversationSpec.model_validate(data)
+    except ValidationError as error:
+        detail = error.errors(include_url=False)[0]
+        location = ".".join(str(part) for part in detail["loc"]) or "input"
+        print(f"Invalid scenario input at '{location}': {detail['msg']}", file=sys.stderr)
+        return 2
+
+    print(f"Scenario is valid: {path}")
+    return 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(prog="agentic-generation")
     subcommands = parser.add_subparsers(dest="command", required=True)
     subcommands.add_parser("check-db", help="Check connectivity, migrations, and pgvector")
-    parser.parse_args()
+    validate_parser = subcommands.add_parser(
+        "validate-scenario", help="Validate a conversation scenario JSON file"
+    )
+    validate_parser.add_argument("path", type=Path)
+    args = parser.parse_args()
+
+    if args.command == "validate-scenario":
+        return validate_scenario(args.path)
 
     if not Path("alembic.ini").is_file():
         print("Run this command from the repository root containing alembic.ini.", file=sys.stderr)
