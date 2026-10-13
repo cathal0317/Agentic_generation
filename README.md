@@ -45,9 +45,29 @@ uv run agentic-generation preview-prompts examples/user_healthcheck.json
 
 ## Conversation loop
 
-The in-memory conversation loop alternates injected user and assistant text
-generators for the configured number of exchanges. It validates generated text
-but does not yet call a provider, persist turns, or produce speech metadata.
+The reusable in-memory loop alternates injected user and assistant text
+generators for the configured number of exchanges. Provider access is handled
+separately; the loop does not persist turns or produce speech metadata.
+
+## OpenAI generation
+
+Set the required generation values in `.env`:
+
+```dotenv
+OPENAI_API_KEY=<your-api-key>
+OPENAI_USER_MODEL=<user-model-id>
+OPENAI_ASSISTANT_MODEL=<assistant-model-id>
+OPENAI_MAX_OUTPUT_TOKENS=2048
+```
+
+Generate a conversation:
+
+```bash
+uv run agentic-generation generate examples/user_healthcheck.json
+```
+
+Generation is synchronous and prints one JSON result. It does not require
+PostgreSQL and does not persist the generated turns.
 
 `uv.lock` records the resolved Python dependencies. `.env` contains local
 configuration and is ignored by Git. The example password is for local

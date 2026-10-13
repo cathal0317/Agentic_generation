@@ -8,11 +8,14 @@ from pathlib import Path
 
 from alembic.config import Config
 from alembic.script import ScriptDirectory
+from openai import OpenAI
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
-from agentic_generation.config import Settings
+from agentic_generation.config import GenerationSettings, Settings
+from agentic_generation.conversation import generate_conversation
 from agentic_generation.db import DatabaseNotReady, check_database, create_db_engine
+from agentic_generation.openai_adapter import create_text_generator
 from agentic_generation.prompts import build_assistant_system_prompt, build_user_system_prompt
 from agentic_generation.spec import ConversationSpec
 
@@ -68,6 +71,70 @@ def preview_prompts(path: Path) -> int:
     return 0
 
 
+def generate_from_scenario(path: Path) -> int:
+    spec = load_scenario(path)
+    if spec is None:
+        return 2
+
+    try:
+        settings = GenerationSettings()
+    except ValidationError:
+        print(
+            "Invalid OpenAI settings. Check OPENAI_* values in .env.",
+            file=sys.stderr,
+        )
+        return 2
+
+    client = None
+    try:
+        client = OpenAI(
+            api_key=settings.api_key.get_secret_value(),
+            timeout=60.0,
+            max_retries=0,
+        )
+        turns = generate_conversation(
+            spec,
+            create_text_generator(
+                client,
+                settings.user_model,
+                settings.max_output_tokens,
+            ),
+            create_text_generator(
+                client,
+                settings.assistant_model,
+                settings.max_output_tokens,
+            ),
+        )
+    except Exception:
+        print(
+            "Conversation generation failed. Check OpenAI configuration and availability.",
+            file=sys.stderr,
+        )
+        return 1
+    finally:
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
+
+    print(
+        json.dumps(
+            {
+                "spec": spec.model_dump(),
+                "models": {
+                    "user": settings.user_model,
+                    "assistant": settings.assistant_model,
+                },
+                "turns": [asdict(turn) for turn in turns],
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="agentic-generation")
     subcommands = parser.add_subparsers(dest="command", required=True)
@@ -80,12 +147,16 @@ def main() -> int:
         "preview-prompts", help="Preview user and assistant system prompts"
     )
     preview_parser.add_argument("path", type=Path)
+    generate_parser = subcommands.add_parser("generate", help="Generate a conversation with OpenAI")
+    generate_parser.add_argument("path", type=Path)
     args = parser.parse_args()
 
     if args.command == "validate-scenario":
         return validate_scenario(args.path)
     if args.command == "preview-prompts":
         return preview_prompts(args.path)
+    if args.command == "generate":
+        return generate_from_scenario(args.path)
 
     if not Path("alembic.ini").is_file():
         print("Run this command from the repository root containing alembic.ini.", file=sys.stderr)

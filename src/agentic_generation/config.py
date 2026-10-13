@@ -1,4 +1,4 @@
-"""One set of database settings shared by the application and migrations."""
+"""Database and generation settings loaded only by their respective commands."""
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -30,3 +30,21 @@ class Settings(BaseSettings):
             port=self.postgres_port,
             database=self.postgres_db,
         )
+
+
+class GenerationSettings(BaseSettings):
+    """OpenAI settings loaded only by conversation generation."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        env_prefix="OPENAI_",
+        extra="ignore",
+        hide_input_in_errors=True,
+        str_strip_whitespace=True,
+    )
+
+    api_key: SecretStr = Field(min_length=1)
+    user_model: str = Field(min_length=1)
+    assistant_model: str = Field(min_length=1)
+    max_output_tokens: int = Field(default=2048, gt=0)

@@ -17,7 +17,10 @@ class ChatMessage(TypedDict):
 
 TextGenerator = Callable[[str, list[ChatMessage]], str]
 
-OPENING_USER_REQUEST = "Begin the conversation by producing the first user utterance."
+OPENING_USER_REQUEST = (
+    "Begin with a brief, natural opening about one thing on your mind. "
+    "Do not summarise your background or list the scenario’s facts."
+)
 
 
 @dataclass(frozen=True)
