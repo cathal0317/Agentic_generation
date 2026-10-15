@@ -5,14 +5,18 @@ from types import SimpleNamespace
 import pytest
 
 import agentic_generation.cli as cli
+from agentic_generation.controller import DialogueAssessment
 from agentic_generation.conversation import OPENING_USER_REQUEST
 
 
 class FakeResponses:
-    def __init__(self, outputs=None, error=None):
+    def __init__(self, outputs=None, error=None, assessments=None, review_error=None):
         self.outputs = iter(outputs or [])
         self.error = error
+        self.assessments = iter(assessments or [])
+        self.review_error = review_error
         self.calls = []
+        self.parse_calls = []
 
     def create(self, **kwargs):
         self.calls.append(kwargs)
@@ -20,10 +24,16 @@ class FakeResponses:
             raise self.error
         return SimpleNamespace(status="completed", output_text=next(self.outputs))
 
+    def parse(self, **kwargs):
+        self.parse_calls.append(kwargs)
+        if self.review_error is not None:
+            raise self.review_error
+        return SimpleNamespace(status="completed", output_parsed=next(self.assessments))
+
 
 class FakeClient:
-    def __init__(self, outputs=None, error=None):
-        self.responses = FakeResponses(outputs, error)
+    def __init__(self, outputs=None, error=None, assessments=None, review_error=None):
+        self.responses = FakeResponses(outputs, error, assessments, review_error)
         self.closed = False
 
     def close(self):
@@ -61,7 +71,15 @@ def test_generate_command_uses_real_orchestrator_and_prints_json(tmp_path, monke
     scenario_path = write_scenario(tmp_path)
     configure_generation(monkeypatch)
     monkeypatch.chdir(tmp_path)
-    client = FakeClient(["Hello from the user.", "Hello from the assistant."])
+    client = FakeClient(
+        ["Hello from the user.", "Hello from the assistant."],
+        assessments=[
+            DialogueAssessment(
+                decision="end",
+                reason="The exchange reached a natural closing.",
+            )
+        ],
+    )
     constructor_calls = []
 
     def fake_openai(**kwargs):
@@ -75,7 +93,11 @@ def test_generate_command_uses_real_orchestrator_and_prints_json(tmp_path, monke
 
     assert constructor_calls == [{"api_key": "test-secret-key", "timeout": 60.0, "max_retries": 0}]
     assert output["spec"]["scenario"] == "A test scenario."
-    assert output["models"] == {"user": "user-model", "assistant": "assistant-model"}
+    assert output["models"] == {
+        "user": "user-model",
+        "assistant": "assistant-model",
+        "reviewer": "assistant-model",
+    }
     assert output["turns"] == [
         {"turn_index": 0, "role": "user", "text": "Hello from the user."},
         {
@@ -93,6 +115,15 @@ def test_generate_command_uses_real_orchestrator_and_prints_json(tmp_path, monke
         {"role": "user", "content": "Hello from the user."}
     ]
     assert all(call["max_output_tokens"] == 456 for call in client.responses.calls)
+    assert output["termination_reason"] == "natural_end"
+    assert output["control_trace"] == [
+        {
+            "after_turn_index": 1,
+            "decision": "end",
+            "reason": "The exchange reached a natural closing.",
+        }
+    ]
+    assert len(client.responses.parse_calls) == 1
     assert client.closed
 
 
@@ -133,6 +164,24 @@ def test_generate_command_sanitizes_provider_errors_and_closes_client(
     assert "Conversation generation failed" in captured.err
     assert "raw provider body" not in captured.err
     assert "test-secret-key" not in captured.err
+    assert client.closed
+
+
+def test_review_errors_use_the_safe_generation_failure_path(tmp_path, monkeypatch, capsys):
+    scenario_path = write_scenario(tmp_path)
+    configure_generation(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    client = FakeClient(
+        ["Hello from the user.", "Hello from the assistant."],
+        review_error=RuntimeError("raw review response"),
+    )
+    monkeypatch.setattr(cli, "OpenAI", lambda **kwargs: client)
+
+    assert run_cli(monkeypatch, "generate", str(scenario_path)) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Conversation generation failed" in captured.err
+    assert "raw review response" not in captured.err
     assert client.closed
 
 

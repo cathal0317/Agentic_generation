@@ -15,7 +15,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from agentic_generation.config import GenerationSettings, Settings
 from agentic_generation.conversation import generate_conversation
 from agentic_generation.db import DatabaseNotReady, check_database, create_db_engine
-from agentic_generation.openai_adapter import create_text_generator
+from agentic_generation.openai_adapter import create_dialogue_reviewer, create_text_generator
 from agentic_generation.prompts import build_assistant_system_prompt, build_user_system_prompt
 from agentic_generation.spec import ConversationSpec
 
@@ -92,7 +92,7 @@ def generate_from_scenario(path: Path) -> int:
             timeout=60.0,
             max_retries=0,
         )
-        turns = generate_conversation(
+        result = generate_conversation(
             spec,
             create_text_generator(
                 client,
@@ -100,6 +100,11 @@ def generate_from_scenario(path: Path) -> int:
                 settings.max_output_tokens,
             ),
             create_text_generator(
+                client,
+                settings.assistant_model,
+                settings.max_output_tokens,
+            ),
+            create_dialogue_reviewer(
                 client,
                 settings.assistant_model,
                 settings.max_output_tokens,
@@ -125,8 +130,11 @@ def generate_from_scenario(path: Path) -> int:
                 "models": {
                     "user": settings.user_model,
                     "assistant": settings.assistant_model,
+                    "reviewer": settings.assistant_model,
                 },
-                "turns": [asdict(turn) for turn in turns],
+                "turns": [asdict(turn) for turn in result.turns],
+                "termination_reason": result.termination_reason,
+                "control_trace": [asdict(record) for record in result.control_trace],
             },
             indent=2,
             ensure_ascii=False,

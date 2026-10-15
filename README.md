@@ -45,9 +45,12 @@ uv run agentic-generation preview-prompts examples/user_healthcheck.json
 
 ## Conversation loop
 
-The reusable in-memory loop alternates injected user and assistant text
-generators for the configured number of exchanges. Provider access is handled
-separately; the loop does not persist turns or produce speech metadata.
+The reusable in-memory loop alternates injected user and assistant generators,
+then reviews the public dialogue after each exchange. It stops at a natural
+ending, after two consecutive stalled assessments, or at `max_exchanges`.
+The two-stall rule is an initial operating rule rather than a validated quality
+threshold. Provider access is handled separately; the loop does not persist
+turns or produce speech metadata.
 
 ## OpenAI generation
 
@@ -66,8 +69,9 @@ Generate a conversation:
 uv run agentic-generation generate examples/user_healthcheck.json
 ```
 
-Generation is synchronous and prints one JSON result. It does not require
-PostgreSQL and does not persist the generated turns.
+Generation is synchronous and prints one JSON result with the turns,
+termination reason, and control trace. It does not require PostgreSQL and does
+not persist the generated turns.
 
 `uv.lock` records the resolved Python dependencies. `.env` contains local
 configuration and is ignored by Git. The example password is for local
