@@ -71,10 +71,31 @@ def preview_prompts(path: Path) -> int:
     return 0
 
 
-def generate_from_scenario(path: Path) -> int:
+def generate_from_scenario(
+    path: Path,
+    premise_path: Path | None = None,
+    premise_id: str | None = None,
+) -> int:
     spec = load_scenario(path)
     if spec is None:
         return 2
+
+    if (premise_path is None) != (premise_id is None):
+        print("--premises and --premise-id must be provided together.", file=sys.stderr)
+        return 2
+
+    selection = None
+    if premise_path is not None and premise_id is not None:
+        from agentic_generation.premises import (
+            PremiseSelectionError,
+            load_premise_selection,
+        )
+
+        try:
+            selection = load_premise_selection(premise_path, premise_id, spec)
+        except PremiseSelectionError as error:
+            print(f"Could not select premise: {error}", file=sys.stderr)
+            return 2
 
     try:
         settings = GenerationSettings()
@@ -109,6 +130,8 @@ def generate_from_scenario(path: Path) -> int:
                 settings.assistant_model,
                 settings.max_output_tokens,
             ),
+            opening=selection.premise.opening if selection is not None else None,
+            concern=selection.premise.concern if selection is not None else None,
         )
     except Exception:
         print(
@@ -132,6 +155,17 @@ def generate_from_scenario(path: Path) -> int:
                     "assistant": settings.assistant_model,
                     "reviewer": settings.assistant_model,
                 },
+                "selected_premise": (
+                    {
+                        **selection.premise.model_dump(),
+                        "generation": {
+                            "prompt_version": selection.prompt_version,
+                            "model": selection.model,
+                        },
+                    }
+                    if selection is not None
+                    else None
+                ),
                 "turns": [asdict(turn) for turn in result.turns],
                 "termination_reason": result.termination_reason,
                 "control_trace": [asdict(record) for record in result.control_trace],
@@ -157,6 +191,8 @@ def main() -> int:
     preview_parser.add_argument("path", type=Path)
     generate_parser = subcommands.add_parser("generate", help="Generate a conversation with OpenAI")
     generate_parser.add_argument("path", type=Path)
+    generate_parser.add_argument("--premises", type=Path)
+    generate_parser.add_argument("--premise-id")
     args = parser.parse_args()
 
     if args.command == "validate-scenario":
@@ -164,7 +200,7 @@ def main() -> int:
     if args.command == "preview-prompts":
         return preview_prompts(args.path)
     if args.command == "generate":
-        return generate_from_scenario(args.path)
+        return generate_from_scenario(args.path, args.premises, args.premise_id)
 
     if not Path("alembic.ini").is_file():
         print("Run this command from the repository root containing alembic.ini.", file=sys.stderr)

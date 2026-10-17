@@ -3,6 +3,7 @@ from pydantic import ValidationError
 
 from agentic_generation.controller import DialogueAssessment
 from agentic_generation.conversation import (
+    CONTINUATION_USER_REQUEST,
     OPENING_USER_REQUEST,
     generate_conversation,
 )
@@ -140,6 +141,108 @@ def test_user_disclosure_reaches_assistant():
     )
 
     assert assistant_messages == [{"role": "user", "content": disclosed_detail}]
+
+
+def test_supplied_opening_is_first_turn_without_user_generation():
+    opening = "I have been thinking about what happened yesterday."
+    calls = []
+
+    def user_generator(system_prompt, messages):
+        raise AssertionError("the opening must not be regenerated")
+
+    def assistant_generator(system_prompt, messages):
+        calls.append(("assistant", messages))
+        return "What about it is still on your mind?"
+
+    def reviewer(transcript):
+        calls.append(("reviewer", transcript))
+        return DialogueAssessment(decision="continue", reason="The dialogue is progressing.")
+
+    result = generate_conversation(
+        ConversationSpec(scenario="A private scenario.", max_exchanges=1),
+        user_generator,
+        assistant_generator,
+        reviewer,
+        opening=opening,
+    )
+
+    assert [(turn.role, turn.text) for turn in result.turns] == [
+        ("user", opening),
+        ("assistant", "What about it is still on your mind?"),
+    ]
+    assert calls[0] == ("assistant", [{"role": "user", "content": opening}])
+    assert calls[1][0] == "reviewer"
+    assert calls[1][1] == [
+        {"turn_index": 0, "role": "user", "text": opening},
+        {
+            "turn_index": 1,
+            "role": "assistant",
+            "text": "What about it is still on your mind?",
+        },
+    ]
+
+
+def test_user_generation_continues_after_supplied_opening():
+    user_calls = []
+    assistant_calls = []
+
+    def user_generator(system_prompt, messages):
+        user_calls.append(messages)
+        return "I keep wondering what could have happened."
+
+    def assistant_generator(system_prompt, messages):
+        assistant_calls.append(messages)
+        return "That uncertainty can linger."
+
+    result = generate_conversation(
+        ConversationSpec(scenario="A private scenario.", max_exchanges=2),
+        user_generator,
+        assistant_generator,
+        continue_review,
+        opening="Yesterday frightened me.",
+    )
+
+    assert len(user_calls) == 1
+    assert user_calls[0] == [
+        {"role": "user", "content": CONTINUATION_USER_REQUEST},
+        {"role": "assistant", "content": "Yesterday frightened me."},
+        {"role": "user", "content": "That uncertainty can linger."},
+    ]
+    assert len(assistant_calls) == 2
+    assert [turn.turn_index for turn in result.turns] == [0, 1, 2, 3]
+
+
+def test_selected_concern_is_private_to_user_generator():
+    private_concern = "PRIVATE_SELECTED_CONCERN"
+    user_prompts = []
+    assistant_requests = []
+    reviewer_transcripts = []
+
+    def user_generator(system_prompt, messages):
+        user_prompts.append(system_prompt)
+        return "I am still thinking about it."
+
+    def assistant_generator(system_prompt, messages):
+        assistant_requests.append((system_prompt, messages))
+        return "What feels most difficult about it?"
+
+    def reviewer(transcript):
+        reviewer_transcripts.append(transcript)
+        return DialogueAssessment(decision="continue", reason="The dialogue is progressing.")
+
+    generate_conversation(
+        ConversationSpec(scenario="A private scenario.", max_exchanges=2),
+        user_generator,
+        assistant_generator,
+        reviewer,
+        opening="Something from yesterday is bothering me.",
+        concern=private_concern,
+    )
+
+    assert len(user_prompts) == 1
+    assert private_concern in user_prompts[0]
+    assert private_concern not in repr(assistant_requests)
+    assert private_concern not in repr(reviewer_transcripts)
 
 
 @pytest.mark.parametrize("invalid_output", [None, 7, "", " \n "])

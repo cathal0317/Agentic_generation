@@ -31,12 +31,17 @@ Do not introduce another task or repeatedly offer further help.
 Return only the next spoken assistant utterance."""
 
 
-def build_user_system_prompt(spec: ConversationSpec) -> str:
+def build_user_system_prompt(
+    spec: ConversationSpec,
+    concern: str | None = None,
+) -> str:
     """Build the user role prompt from validated scenario input."""
     personality = json.dumps(spec.user_personality, indent=2, sort_keys=True, ensure_ascii=False)
+    private_focus = f"Selected private concern:\n{concern}\n\n" if concern is not None else ""
     return (
         f"Scenario:\n{spec.scenario}\n\n"
         f"User personality:\n{personality}\n\n"
+        f"{private_focus}"
         f"Instructions:\n{USER_PROMPT_INSTRUCTIONS}"
     )
 

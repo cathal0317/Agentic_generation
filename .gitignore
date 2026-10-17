@@ -31,3 +31,6 @@ dist/
 
 # Local logs
 *.log
+
+# Local generation outputs
+results/
