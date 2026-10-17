@@ -4,6 +4,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal, TypedDict
 
+from agentic_generation.controller import (
+    ControlRecord,
+    DialogueAssessment,
+    DialogueReviewer,
+    PublicTurn,
+    TerminationReason,
+)
 from agentic_generation.prompts import build_assistant_system_prompt, build_user_system_prompt
 from agentic_generation.spec import ConversationSpec
 
@@ -17,7 +24,10 @@ class ChatMessage(TypedDict):
 
 TextGenerator = Callable[[str, list[ChatMessage]], str]
 
-OPENING_USER_REQUEST = "Begin the conversation by producing the first user utterance."
+OPENING_USER_REQUEST = (
+    "Begin with a brief, natural opening about one thing on your mind. "
+    "Do not summarise your background or list the scenario’s facts."
+)
 
 
 @dataclass(frozen=True)
@@ -25,6 +35,13 @@ class Turn:
     turn_index: int
     role: Role
     text: str
+
+
+@dataclass(frozen=True)
+class ConversationResult:
+    turns: list[Turn]
+    termination_reason: TerminationReason
+    control_trace: list[ControlRecord]
 
 
 def _user_messages(turns: list[Turn]) -> list[ChatMessage]:
@@ -39,6 +56,12 @@ def _assistant_messages(turns: list[Turn]) -> list[ChatMessage]:
     return [ChatMessage(role=turn.role, content=turn.text) for turn in turns]
 
 
+def _public_transcript(turns: list[Turn]) -> list[PublicTurn]:
+    return [
+        PublicTurn(turn_index=turn.turn_index, role=turn.role, text=turn.text) for turn in turns
+    ]
+
+
 def _validated_output(output: object, role: Role) -> str:
     if not isinstance(output, str):
         raise TypeError(f"{role} generator returned a non-string output")
@@ -51,9 +74,12 @@ def generate_conversation(
     spec: ConversationSpec,
     user_generator: TextGenerator,
     assistant_generator: TextGenerator,
-) -> list[Turn]:
-    """Generate a fixed number of alternating exchanges in memory."""
+    reviewer: DialogueReviewer,
+) -> ConversationResult:
+    """Generate bounded exchanges and stop on a natural end or repeated stalls."""
     turns: list[Turn] = []
+    control_trace: list[ControlRecord] = []
+    consecutive_stalls = 0
     user_system_prompt = build_user_system_prompt(spec)
     assistant_system_prompt = build_assistant_system_prompt()
 
@@ -70,4 +96,22 @@ def generate_conversation(
         )
         turns.append(Turn(turn_index=len(turns), role="assistant", text=assistant_text))
 
-    return turns
+        assessment = DialogueAssessment.model_validate(reviewer(_public_transcript(turns)))
+        control_trace.append(
+            ControlRecord(
+                after_turn_index=turns[-1].turn_index,
+                decision=assessment.decision,
+                reason=assessment.reason,
+            )
+        )
+
+        if assessment.decision == "end":
+            return ConversationResult(turns, "natural_end", control_trace)
+        if assessment.decision == "stalled":
+            consecutive_stalls += 1
+            if consecutive_stalls == 2:
+                return ConversationResult(turns, "stalled", control_trace)
+        else:
+            consecutive_stalls = 0
+
+    return ConversationResult(turns, "max_exchanges", control_trace)
