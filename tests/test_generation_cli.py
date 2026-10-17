@@ -40,14 +40,39 @@ class FakeClient:
         self.closed = True
 
 
-def write_scenario(tmp_path):
+def write_scenario(tmp_path, max_exchanges=1):
     path = tmp_path / "scenario.json"
     path.write_text(
         json.dumps(
             {
                 "scenario": "A test scenario.",
                 "user_personality": {"style": "reserved"},
-                "max_exchanges": 1,
+                "max_exchanges": max_exchanges,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def write_premises(tmp_path, scenario_path):
+    path = tmp_path / "premises.json"
+    path.write_text(
+        json.dumps(
+            {
+                "spec": json.loads(scenario_path.read_text()),
+                "model": "candidate-model",
+                "max_output_tokens": 512,
+                "prompt_version": "premises-v1",
+                "review_status": "unreviewed",
+                "premises": [
+                    {
+                        "id": "p1",
+                        "concern": "PRIVATE_SELECTED_CONCERN",
+                        "opening": "The situation yesterday is still bothering me.",
+                        "source_quotes": ["A test scenario."],
+                    }
+                ],
             }
         ),
         encoding="utf-8",
@@ -125,6 +150,78 @@ def test_generate_command_uses_real_orchestrator_and_prints_json(tmp_path, monke
     ]
     assert len(client.responses.parse_calls) == 1
     assert client.closed
+
+
+def test_generate_command_runs_selected_premise_and_records_provenance(
+    tmp_path, monkeypatch, capsys
+):
+    scenario_path = write_scenario(tmp_path, max_exchanges=2)
+    premise_path = write_premises(tmp_path, scenario_path)
+    configure_generation(monkeypatch)
+    client = FakeClient(
+        [
+            "What about it is still on your mind?",
+            "I keep thinking about what could have happened.",
+            "That uncertainty can linger.",
+        ],
+        assessments=[
+            DialogueAssessment(decision="continue", reason="The dialogue is progressing."),
+            DialogueAssessment(decision="end", reason="The concern has been explored."),
+        ],
+    )
+    monkeypatch.setattr(cli, "OpenAI", lambda **kwargs: client)
+
+    assert (
+        run_cli(
+            monkeypatch,
+            "generate",
+            str(scenario_path),
+            "--premises",
+            str(premise_path),
+            "--premise-id",
+            "p1",
+        )
+        == 0
+    )
+    output = json.loads(capsys.readouterr().out)
+
+    assert output["turns"][0]["text"] == ("The situation yesterday is still bothering me.")
+    assert output["selected_premise"] == {
+        "id": "p1",
+        "concern": "PRIVATE_SELECTED_CONCERN",
+        "opening": "The situation yesterday is still bothering me.",
+        "source_quotes": ["A test scenario."],
+        "generation": {
+            "prompt_version": "premises-v1",
+            "model": "candidate-model",
+        },
+    }
+    assert [call["model"] for call in client.responses.calls] == [
+        "assistant-model",
+        "user-model",
+        "assistant-model",
+    ]
+    assert "PRIVATE_SELECTED_CONCERN" in client.responses.calls[1]["instructions"]
+    assert "PRIVATE_SELECTED_CONCERN" not in repr(
+        [client.responses.calls[0], client.responses.calls[2]]
+    )
+    assert "PRIVATE_SELECTED_CONCERN" not in repr(client.responses.parse_calls)
+
+
+def test_generate_command_requires_both_premise_options(tmp_path, monkeypatch, capsys):
+    scenario_path = write_scenario(tmp_path)
+
+    assert (
+        run_cli(
+            monkeypatch,
+            "generate",
+            str(scenario_path),
+            "--premise-id",
+            "p1",
+        )
+        == 2
+    )
+    assert "must be provided together" in capsys.readouterr().err
 
 
 def test_generate_command_rejects_missing_configuration(tmp_path, monkeypatch, capsys):
