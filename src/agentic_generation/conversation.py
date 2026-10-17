@@ -83,6 +83,7 @@ def generate_conversation(
     assistant_generator: TextGenerator,
     reviewer: DialogueReviewer,
     opening: str | None = None,
+    concern: str | None = None,
 ) -> ConversationResult:
     """Generate bounded exchanges and stop on a natural end or repeated stalls."""
     turns = (
@@ -92,7 +93,7 @@ def generate_conversation(
     )
     control_trace: list[ControlRecord] = []
     consecutive_stalls = 0
-    user_system_prompt = build_user_system_prompt(spec)
+    user_system_prompt = build_user_system_prompt(spec, concern)
     assistant_system_prompt = build_assistant_system_prompt()
     has_supplied_opening = opening is not None
 

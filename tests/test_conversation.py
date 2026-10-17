@@ -212,6 +212,39 @@ def test_user_generation_continues_after_supplied_opening():
     assert [turn.turn_index for turn in result.turns] == [0, 1, 2, 3]
 
 
+def test_selected_concern_is_private_to_user_generator():
+    private_concern = "PRIVATE_SELECTED_CONCERN"
+    user_prompts = []
+    assistant_requests = []
+    reviewer_transcripts = []
+
+    def user_generator(system_prompt, messages):
+        user_prompts.append(system_prompt)
+        return "I am still thinking about it."
+
+    def assistant_generator(system_prompt, messages):
+        assistant_requests.append((system_prompt, messages))
+        return "What feels most difficult about it?"
+
+    def reviewer(transcript):
+        reviewer_transcripts.append(transcript)
+        return DialogueAssessment(decision="continue", reason="The dialogue is progressing.")
+
+    generate_conversation(
+        ConversationSpec(scenario="A private scenario.", max_exchanges=2),
+        user_generator,
+        assistant_generator,
+        reviewer,
+        opening="Something from yesterday is bothering me.",
+        concern=private_concern,
+    )
+
+    assert len(user_prompts) == 1
+    assert private_concern in user_prompts[0]
+    assert private_concern not in repr(assistant_requests)
+    assert private_concern not in repr(reviewer_transcripts)
+
+
 @pytest.mark.parametrize("invalid_output", [None, 7, "", " \n "])
 def test_invalid_user_output_stops_generation(invalid_output):
     calls = []
