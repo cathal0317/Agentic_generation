@@ -7,6 +7,7 @@ import pytest
 import agentic_generation.cli as cli
 from agentic_generation.controller import DialogueAssessment
 from agentic_generation.conversation import OPENING_USER_REQUEST
+from agentic_generation.openai_adapter import GenerationError
 
 
 class FakeResponses:
@@ -124,6 +125,11 @@ def test_generate_command_uses_real_orchestrator_and_prints_json(tmp_path, monke
         "user": "user-model",
         "assistant": "assistant-model",
         "reviewer": "assistant-model",
+    }
+    assert output["generation_settings"] == {
+        "max_output_tokens": 456,
+        "timeout_seconds": 60.0,
+        "max_retries": 0,
     }
     assert output["turns"] == [
         {"turn_index": 0, "role": "user", "text": "Hello from the user."},
@@ -345,6 +351,63 @@ def test_generate_command_sanitizes_provider_errors_and_closes_client(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "Conversation generation failed" in captured.err
+    assert "raw provider body" not in captured.err
+    assert "test-secret-key" not in captured.err
+    assert client.closed
+
+
+def test_generate_command_reports_safe_generation_stage(tmp_path, monkeypatch, capsys):
+    scenario_path = write_scenario(tmp_path)
+    configure_generation(monkeypatch)
+    client = FakeClient()
+    monkeypatch.setattr(cli, "OpenAI", lambda **kwargs: client)
+
+    def incomplete_generation(*args, **kwargs):
+        raise GenerationError("user response did not complete: max_output_tokens")
+
+    monkeypatch.setattr(cli, "generate_conversation", incomplete_generation)
+
+    assert run_cli(monkeypatch, "generate", str(scenario_path)) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert (
+        "Conversation generation failed: user response did not complete: max_output_tokens"
+    ) in captured.err
+    assert client.closed
+
+
+@pytest.mark.parametrize(
+    ("error_name", "expected_message"),
+    [
+        ("APIConnectionError", "could not connect to OpenAI"),
+        ("APITimeoutError", "OpenAI request timed out"),
+        ("APIStatusError", "OpenAI returned HTTP 429"),
+    ],
+)
+def test_generate_command_classifies_provider_errors_safely(
+    error_name,
+    expected_message,
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    class SafeProviderError(Exception):
+        status_code = 429
+
+    scenario_path = write_scenario(tmp_path)
+    configure_generation(monkeypatch)
+    client = FakeClient()
+    monkeypatch.setattr(cli, "OpenAI", lambda **kwargs: client)
+    monkeypatch.setattr(cli, error_name, SafeProviderError)
+
+    def failed_generation(*args, **kwargs):
+        raise SafeProviderError("raw provider body with test-secret-key")
+
+    monkeypatch.setattr(cli, "generate_conversation", failed_generation)
+
+    assert run_cli(monkeypatch, "generate", str(scenario_path)) == 1
+    captured = capsys.readouterr()
+    assert expected_message in captured.err
     assert "raw provider body" not in captured.err
     assert "test-secret-key" not in captured.err
     assert client.closed

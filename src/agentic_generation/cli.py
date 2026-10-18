@@ -8,14 +8,18 @@ from pathlib import Path
 
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-from openai import OpenAI
+from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
 from agentic_generation.config import GenerationSettings, Settings
 from agentic_generation.conversation import generate_conversation
 from agentic_generation.db import DatabaseNotReady, check_database, create_db_engine
-from agentic_generation.openai_adapter import create_dialogue_reviewer, create_text_generator
+from agentic_generation.openai_adapter import (
+    GenerationError,
+    create_dialogue_reviewer,
+    create_text_generator,
+)
 from agentic_generation.prompts import build_assistant_system_prompt, build_user_system_prompt
 from agentic_generation.spec import ConversationSpec
 
@@ -120,11 +124,13 @@ def generate_from_scenario(
                 client,
                 settings.user_model,
                 settings.max_output_tokens,
+                stage="user",
             ),
             create_text_generator(
                 client,
                 settings.assistant_model,
                 settings.max_output_tokens,
+                stage="assistant",
             ),
             create_dialogue_reviewer(
                 client,
@@ -135,6 +141,21 @@ def generate_from_scenario(
             concern=selection.premise.concern if selection is not None else None,
             contract=selection.premise.contract if selection is not None else None,
         )
+    except GenerationError as error:
+        print(f"Conversation generation failed: {error}", file=sys.stderr)
+        return 1
+    except APITimeoutError:
+        print("Conversation generation failed: OpenAI request timed out.", file=sys.stderr)
+        return 1
+    except APIConnectionError:
+        print("Conversation generation failed: could not connect to OpenAI.", file=sys.stderr)
+        return 1
+    except APIStatusError as error:
+        print(
+            f"Conversation generation failed: OpenAI returned HTTP {error.status_code}.",
+            file=sys.stderr,
+        )
+        return 1
     except Exception:
         print(
             "Conversation generation failed. Check OpenAI configuration and availability.",
@@ -156,6 +177,11 @@ def generate_from_scenario(
                     "user": settings.user_model,
                     "assistant": settings.assistant_model,
                     "reviewer": settings.assistant_model,
+                },
+                "generation_settings": {
+                    "max_output_tokens": settings.max_output_tokens,
+                    "timeout_seconds": 60.0,
+                    "max_retries": 0,
                 },
                 "selected_premise": (
                     {
