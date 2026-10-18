@@ -63,7 +63,6 @@ class Premise(BaseModel):
     concern: NonEmptyText
     opening: NonEmptyText
     source_quotes: list[NonEmptyText] = Field(min_length=1)
-    contract: ScenarioContract | None = None
 
 
 class PremiseBatch(BaseModel):
@@ -78,6 +77,7 @@ class StoredPremise(Premise):
     """One premise identified within a saved proposal artifact."""
 
     id: str = Field(pattern=r"^p[1-9][0-9]*$")
+    contract: ScenarioContract | None = None
 
 
 class PremiseArtifact(BaseModel):
