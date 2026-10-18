@@ -107,6 +107,15 @@ class PremiseSelectionError(ValueError):
     """A saved premise artifact cannot be used for this run."""
 
 
+def _validate_source_quotes(premise: Premise, scenario: str) -> None:
+    if any(quote not in scenario for quote in premise.source_quotes):
+        raise ValueError("A supporting quotation was not found in the scenario")
+
+    if isinstance(premise, StoredPremise) and premise.contract is not None:
+        if any(quote not in scenario for quote in premise.contract.source_quotes):
+            raise ValueError("A contract supporting quotation was not found in the scenario")
+
+
 def load_premise_selection(
     path: Path,
     premise_id: str,
@@ -122,13 +131,11 @@ def load_premise_selection(
     if artifact.spec != spec:
         raise PremiseSelectionError("The premise artifact was generated from a different scenario")
 
-    for premise in artifact.premises:
-        if premise.contract is not None and any(
-            quote not in spec.scenario for quote in premise.contract.source_quotes
-        ):
-            raise PremiseSelectionError(
-                "A contract supporting quotation was not found in the scenario"
-            )
+    try:
+        for premise in artifact.premises:
+            _validate_source_quotes(premise, spec.scenario)
+    except ValueError as error:
+        raise PremiseSelectionError(str(error)) from error
 
     selected = next(
         (premise for premise in artifact.premises if premise.id == premise_id),
@@ -163,9 +170,11 @@ def propose_premises(
         raise GenerationError("No complete, valid premise batch was returned")
 
     batch = response.output_parsed
-    for premise in batch.premises:
-        if any(quote not in spec.scenario for quote in premise.source_quotes):
-            raise GenerationError("A supporting quotation was not found in the scenario")
+    try:
+        for premise in batch.premises:
+            _validate_source_quotes(premise, spec.scenario)
+    except ValueError as error:
+        raise GenerationError(str(error)) from error
 
     normalized_openings = [
         " ".join(premise.opening.casefold().split()) for premise in batch.premises

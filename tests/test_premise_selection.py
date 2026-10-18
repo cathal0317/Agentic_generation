@@ -102,6 +102,14 @@ def test_rejects_ungrounded_contract_quote(tmp_path, spec, artifact_data):
         load_premise_selection(path, "p1", spec)
 
 
+def test_rejects_ungrounded_premise_quote(tmp_path, spec, artifact_data):
+    artifact_data["premises"][0]["source_quotes"] = ["She fell this morning."]
+    path = write_artifact(tmp_path, artifact_data)
+
+    with pytest.raises(PremiseSelectionError, match="supporting quotation"):
+        load_premise_selection(path, "p1", spec)
+
+
 def test_loads_selected_premise_with_generation_metadata(tmp_path, spec, artifact_data):
     path = write_artifact(tmp_path, artifact_data)
 
