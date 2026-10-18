@@ -7,6 +7,7 @@ from agentic_generation.conversation import (
     OPENING_USER_REQUEST,
     generate_conversation,
 )
+from agentic_generation.premises import ScenarioContract, ScenarioTension
 from agentic_generation.prompts import build_assistant_system_prompt
 from agentic_generation.spec import ConversationSpec
 
@@ -212,8 +213,28 @@ def test_user_generation_continues_after_supplied_opening():
     assert [turn.turn_index for turn in result.turns] == [0, 1, 2, 3]
 
 
-def test_selected_concern_is_private_to_user_generator():
+def test_selected_concern_and_contract_are_private_to_user_generator():
     private_concern = "PRIVATE_SELECTED_CONCERN"
+    contract = ScenarioContract(
+        focus="PRIVATE_FOCUS",
+        private_goal="PRIVATE_GOAL",
+        tension=ScenarioTension(
+            wants="PRIVATE_WANT",
+            worries_about="PRIVATE_WORRY",
+        ),
+        disclosure_policy=["PRIVATE_DISCLOSURE_POLICY"],
+        change_conditions=["PRIVATE_CHANGE_CONDITION"],
+        source_quotes=["A private scenario."],
+    )
+    private_values = [
+        private_concern,
+        contract.focus,
+        contract.private_goal,
+        contract.tension.wants,
+        contract.tension.worries_about,
+        *contract.disclosure_policy,
+        *contract.change_conditions,
+    ]
     user_prompts = []
     assistant_requests = []
     reviewer_transcripts = []
@@ -237,12 +258,13 @@ def test_selected_concern_is_private_to_user_generator():
         reviewer,
         opening="Something from yesterday is bothering me.",
         concern=private_concern,
+        contract=contract,
     )
 
     assert len(user_prompts) == 1
-    assert private_concern in user_prompts[0]
-    assert private_concern not in repr(assistant_requests)
-    assert private_concern not in repr(reviewer_transcripts)
+    assert all(value in user_prompts[0] for value in private_values)
+    assert all(value not in repr(assistant_requests) for value in private_values)
+    assert all(value not in repr(reviewer_transcripts) for value in private_values)
 
 
 @pytest.mark.parametrize("invalid_output", [None, 7, "", " \n "])

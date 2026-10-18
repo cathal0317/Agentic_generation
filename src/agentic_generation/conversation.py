@@ -1,8 +1,10 @@
 """In-memory orchestration for alternating user and assistant turns."""
 
+from __future__ import annotations
+
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal, TypedDict
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 from agentic_generation.controller import (
     ControlRecord,
@@ -13,6 +15,9 @@ from agentic_generation.controller import (
 )
 from agentic_generation.prompts import build_assistant_system_prompt, build_user_system_prompt
 from agentic_generation.spec import ConversationSpec
+
+if TYPE_CHECKING:
+    from agentic_generation.premises import ScenarioContract
 
 Role = Literal["user", "assistant"]
 
@@ -84,6 +89,7 @@ def generate_conversation(
     reviewer: DialogueReviewer,
     opening: str | None = None,
     concern: str | None = None,
+    contract: ScenarioContract | None = None,
 ) -> ConversationResult:
     """Generate bounded exchanges and stop on a natural end or repeated stalls."""
     turns = (
@@ -93,7 +99,7 @@ def generate_conversation(
     )
     control_trace: list[ControlRecord] = []
     consecutive_stalls = 0
-    user_system_prompt = build_user_system_prompt(spec, concern)
+    user_system_prompt = build_user_system_prompt(spec, concern, contract)
     assistant_system_prompt = build_assistant_system_prompt()
     has_supplied_opening = opening is not None
 
