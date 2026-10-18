@@ -1,10 +1,13 @@
 """Command-line checks for scenario input and database readiness."""
 
 import argparse
+import hashlib
 import json
 import sys
 from dataclasses import asdict
+from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 from alembic.config import Config
 from alembic.script import ScriptDirectory
@@ -13,6 +16,7 @@ from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
 from agentic_generation.config import GenerationSettings, Settings
+from agentic_generation.controller import REVIEWER_SYSTEM_PROMPT
 from agentic_generation.conversation import generate_conversation
 from agentic_generation.db import DatabaseNotReady, check_database, create_db_engine
 from agentic_generation.openai_adapter import (
@@ -22,6 +26,10 @@ from agentic_generation.openai_adapter import (
 )
 from agentic_generation.prompts import build_assistant_system_prompt, build_user_system_prompt
 from agentic_generation.spec import ConversationSpec
+
+
+def _prompt_hash(prompt: str) -> str:
+    return hashlib.sha256(prompt.encode("utf-8")).hexdigest()
 
 
 def load_scenario(path: Path) -> ConversationSpec | None:
@@ -111,6 +119,16 @@ def generate_from_scenario(
         )
         return 2
 
+    run_id = str(uuid4())
+    created_at = datetime.now(UTC).isoformat()
+    concern = selection.premise.concern if selection is not None else None
+    contract = selection.premise.contract if selection is not None else None
+    prompt_hashes = {
+        "user": _prompt_hash(build_user_system_prompt(spec, concern, contract)),
+        "assistant": _prompt_hash(build_assistant_system_prompt()),
+        "reviewer": _prompt_hash(REVIEWER_SYSTEM_PROMPT),
+    }
+
     client = None
     try:
         client = OpenAI(
@@ -142,23 +160,34 @@ def generate_from_scenario(
             contract=selection.premise.contract if selection is not None else None,
         )
     except GenerationError as error:
-        print(f"Conversation generation failed: {error}", file=sys.stderr)
+        print(
+            f"Conversation generation failed: {error} (run_id={run_id})",
+            file=sys.stderr,
+        )
         return 1
     except APITimeoutError:
-        print("Conversation generation failed: OpenAI request timed out.", file=sys.stderr)
+        print(
+            f"Conversation generation failed: OpenAI request timed out. (run_id={run_id})",
+            file=sys.stderr,
+        )
         return 1
     except APIConnectionError:
-        print("Conversation generation failed: could not connect to OpenAI.", file=sys.stderr)
+        print(
+            f"Conversation generation failed: could not connect to OpenAI. (run_id={run_id})",
+            file=sys.stderr,
+        )
         return 1
     except APIStatusError as error:
         print(
-            f"Conversation generation failed: OpenAI returned HTTP {error.status_code}.",
+            "Conversation generation failed: "
+            f"OpenAI returned HTTP {error.status_code}. (run_id={run_id})",
             file=sys.stderr,
         )
         return 1
     except Exception:
         print(
-            "Conversation generation failed. Check OpenAI configuration and availability.",
+            "Conversation generation failed. Check OpenAI configuration and availability. "
+            f"(run_id={run_id})",
             file=sys.stderr,
         )
         return 1
@@ -172,6 +201,11 @@ def generate_from_scenario(
     print(
         json.dumps(
             {
+                "run": {
+                    "id": run_id,
+                    "created_at": created_at,
+                    "prompt_hashes": prompt_hashes,
+                },
                 "spec": spec.model_dump(),
                 "models": {
                     "user": settings.user_model,

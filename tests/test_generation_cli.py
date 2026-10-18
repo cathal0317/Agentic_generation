@@ -1,6 +1,8 @@
 import json
 import sys
+from datetime import datetime
 from types import SimpleNamespace
+from uuid import UUID
 
 import pytest
 
@@ -120,6 +122,10 @@ def test_generate_command_uses_real_orchestrator_and_prints_json(tmp_path, monke
     output = json.loads(capsys.readouterr().out)
 
     assert constructor_calls == [{"api_key": "test-secret-key", "timeout": 60.0, "max_retries": 0}]
+    UUID(output["run"]["id"])
+    datetime.fromisoformat(output["run"]["created_at"])
+    assert set(output["run"]["prompt_hashes"]) == {"user", "assistant", "reviewer"}
+    assert all(len(prompt_hash) == 64 for prompt_hash in output["run"]["prompt_hashes"].values())
     assert output["spec"]["scenario"] == "A test scenario."
     assert output["models"] == {
         "user": "user-model",
@@ -373,6 +379,7 @@ def test_generate_command_reports_safe_generation_stage(tmp_path, monkeypatch, c
     assert (
         "Conversation generation failed: user response did not complete: max_output_tokens"
     ) in captured.err
+    assert "run_id=" in captured.err
     assert client.closed
 
 
