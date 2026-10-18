@@ -87,6 +87,7 @@ def generate_from_scenario(
     selection = None
     if premise_path is not None and premise_id is not None:
         from agentic_generation.premises import (
+            CONTRACT_VERSION,
             PremiseSelectionError,
             load_premise_selection,
         )
@@ -132,6 +133,7 @@ def generate_from_scenario(
             ),
             opening=selection.premise.opening if selection is not None else None,
             concern=selection.premise.concern if selection is not None else None,
+            contract=selection.premise.contract if selection is not None else None,
         )
     except Exception:
         print(
@@ -161,6 +163,9 @@ def generate_from_scenario(
                         "generation": {
                             "prompt_version": selection.prompt_version,
                             "model": selection.model,
+                            "contract_version": (
+                                CONTRACT_VERSION if selection.premise.contract is not None else None
+                            ),
                         },
                     }
                     if selection is not None

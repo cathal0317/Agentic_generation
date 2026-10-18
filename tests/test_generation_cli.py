@@ -55,7 +55,16 @@ def write_scenario(tmp_path, max_exchanges=1):
     return path
 
 
-def write_premises(tmp_path, scenario_path):
+def write_premises(tmp_path, scenario_path, contract=None):
+    premise = {
+        "id": "p1",
+        "concern": "PRIVATE_SELECTED_CONCERN",
+        "opening": "The situation yesterday is still bothering me.",
+        "source_quotes": ["A test scenario."],
+    }
+    if contract is not None:
+        premise["contract"] = contract
+
     path = tmp_path / "premises.json"
     path.write_text(
         json.dumps(
@@ -65,14 +74,7 @@ def write_premises(tmp_path, scenario_path):
                 "max_output_tokens": 512,
                 "prompt_version": "premises-v1",
                 "review_status": "unreviewed",
-                "premises": [
-                    {
-                        "id": "p1",
-                        "concern": "PRIVATE_SELECTED_CONCERN",
-                        "opening": "The situation yesterday is still bothering me.",
-                        "source_quotes": ["A test scenario."],
-                    }
-                ],
+                "premises": [premise],
             }
         ),
         encoding="utf-8",
@@ -191,9 +193,11 @@ def test_generate_command_runs_selected_premise_and_records_provenance(
         "concern": "PRIVATE_SELECTED_CONCERN",
         "opening": "The situation yesterday is still bothering me.",
         "source_quotes": ["A test scenario."],
+        "contract": None,
         "generation": {
             "prompt_version": "premises-v1",
             "model": "candidate-model",
+            "contract_version": None,
         },
     }
     assert [call["model"] for call in client.responses.calls] == [
@@ -206,6 +210,88 @@ def test_generate_command_runs_selected_premise_and_records_provenance(
         [client.responses.calls[0], client.responses.calls[2]]
     )
     assert "PRIVATE_SELECTED_CONCERN" not in repr(client.responses.parse_calls)
+
+
+def test_generate_command_passes_and_records_private_contract(tmp_path, monkeypatch, capsys):
+    scenario_path = write_scenario(tmp_path, max_exchanges=2)
+    contract = {
+        "focus": "PRIVATE_FOCUS",
+        "private_goal": "PRIVATE_GOAL",
+        "tension": {
+            "wants": "PRIVATE_WANT",
+            "worries_about": "PRIVATE_WORRY",
+        },
+        "disclosure_policy": ["PRIVATE_DISCLOSURE"],
+        "change_conditions": ["PRIVATE_CHANGE"],
+        "source_quotes": ["A test scenario."],
+    }
+    premise_path = write_premises(tmp_path, scenario_path, contract)
+    configure_generation(monkeypatch)
+    client = FakeClient(
+        [
+            "A public assistant response.",
+            "A later user response.",
+            "A final assistant response.",
+        ],
+        assessments=[
+            DialogueAssessment(decision="continue", reason="The dialogue continues."),
+            DialogueAssessment(decision="end", reason="The dialogue is complete."),
+        ],
+    )
+    monkeypatch.setattr(cli, "OpenAI", lambda **kwargs: client)
+
+    assert (
+        run_cli(
+            monkeypatch,
+            "generate",
+            str(scenario_path),
+            "--premises",
+            str(premise_path),
+            "--premise-id",
+            "p1",
+        )
+        == 0
+    )
+    output = json.loads(capsys.readouterr().out)
+
+    assert output["selected_premise"]["contract"] == contract
+    assert output["selected_premise"]["generation"]["contract_version"] == ("scenario-contract-v1")
+    assert output["turns"][0]["text"] == ("The situation yesterday is still bothering me.")
+    assert "PRIVATE_FOCUS" in client.responses.calls[1]["instructions"]
+    assert "PRIVATE_FOCUS" not in repr([client.responses.calls[0], client.responses.calls[2]])
+    assert "PRIVATE_FOCUS" not in repr(client.responses.parse_calls)
+
+
+def test_generate_rejects_ungrounded_contract_before_provider_call(tmp_path, monkeypatch, capsys):
+    scenario_path = write_scenario(tmp_path)
+    contract = {
+        "focus": "A private focus.",
+        "private_goal": "A private goal.",
+        "tension": {"wants": "Independence.", "worries_about": "Falling."},
+        "disclosure_policy": ["Disclose details gradually."],
+        "change_conditions": ["Consider relevant suggestions."],
+        "source_quotes": ["This quotation is absent."],
+    }
+    premise_path = write_premises(tmp_path, scenario_path, contract)
+
+    def unexpected_client(**kwargs):
+        raise AssertionError("provider must not be called")
+
+    monkeypatch.setattr(cli, "OpenAI", unexpected_client)
+
+    assert (
+        run_cli(
+            monkeypatch,
+            "generate",
+            str(scenario_path),
+            "--premises",
+            str(premise_path),
+            "--premise-id",
+            "p1",
+        )
+        == 2
+    )
+    assert "contract supporting quotation" in capsys.readouterr().err
 
 
 def test_generate_command_requires_both_premise_options(tmp_path, monkeypatch, capsys):
