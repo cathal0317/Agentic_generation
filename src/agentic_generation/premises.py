@@ -32,6 +32,28 @@ Return fewer candidates if six would require repetition.
 NonEmptyText = Annotated[str, Field(min_length=1)]
 
 
+class ScenarioTension(BaseModel):
+    """Competing motivations within one selected scenario."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
+
+    wants: NonEmptyText
+    worries_about: NonEmptyText
+
+
+class ScenarioContract(BaseModel):
+    """Private interaction guidance grounded in the source scenario."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
+
+    focus: NonEmptyText
+    private_goal: NonEmptyText
+    tension: ScenarioTension
+    disclosure_policy: list[NonEmptyText] = Field(min_length=1)
+    change_conditions: list[NonEmptyText] = Field(min_length=1)
+    source_quotes: list[NonEmptyText] = Field(min_length=1)
+
+
 class Premise(BaseModel):
     """Concern and an spoken opening candidate."""
 
@@ -40,6 +62,7 @@ class Premise(BaseModel):
     concern: NonEmptyText
     opening: NonEmptyText
     source_quotes: list[NonEmptyText] = Field(min_length=1)
+    contract: ScenarioContract | None = None
 
 
 class PremiseBatch(BaseModel):
@@ -97,6 +120,14 @@ def load_premise_selection(
 
     if artifact.spec != spec:
         raise PremiseSelectionError("The premise artifact was generated from a different scenario")
+
+    for premise in artifact.premises:
+        if premise.contract is not None and any(
+            quote not in spec.scenario for quote in premise.contract.source_quotes
+        ):
+            raise PremiseSelectionError(
+                "A contract supporting quotation was not found in the scenario"
+            )
 
     selected = next(
         (premise for premise in artifact.premises if premise.id == premise_id),
