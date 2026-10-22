@@ -290,6 +290,11 @@ def main() -> int:
     generate_parser.add_argument("path", type=Path)
     generate_parser.add_argument("--premises", type=Path)
     generate_parser.add_argument("--premise-id")
+    contrastive_parser = subcommands.add_parser(
+        "generate-contrastive", help="Generate contrastive appraisal candidates"
+    )
+    contrastive_parser.add_argument("--contrast-id", required=True)
+    contrastive_parser.add_argument("--count", required=True, type=int)
     args = parser.parse_args()
 
     if args.command == "validate-scenario":
@@ -298,6 +303,10 @@ def main() -> int:
         return preview_prompts(args.path)
     if args.command == "generate":
         return generate_from_scenario(args.path, args.premises, args.premise_id)
+    if args.command == "generate-contrastive":
+        from agentic_generation.contrastive.cli import generate_contrastive
+
+        return generate_contrastive(args.contrast_id, args.count)
 
     if not Path("alembic.ini").is_file():
         print("Run this command from the repository root containing alembic.ini.", file=sys.stderr)
