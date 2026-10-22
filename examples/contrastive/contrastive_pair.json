@@ -1,0 +1,24 @@
+{
+  "utterance": "They put me in charge.",
+  "appraisal_axis": "opportunity_vs_burden",
+  "conditions": [
+    {
+      "appraisal": "opportunity",
+      "private_context": "The speaker wanted an opportunity to lead.",
+      "vocal_direction": "Quietly proud, with restrained excitement.",
+      "response_goals": [
+        "Acknowledge the opportunity.",
+        "Invite the speaker to share what they are looking forward to."
+      ]
+    },
+    {
+      "appraisal": "burden",
+      "private_context": "The speaker is already overworked and did not want the responsibility.",
+      "vocal_direction": "Tired and overwhelmed.",
+      "response_goals": [
+        "Acknowledge the added pressure.",
+        "Ask whether support or flexibility is available."
+      ]
+    }
+  ]
+}

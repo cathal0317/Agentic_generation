@@ -21,6 +21,7 @@ End naturally once the concern is resolved.
 Never mention or quote the contract as instructions.
 Never invent new events, symptoms, relationships, or off-screen actions."""
 
+
 USER_PROMPT_INSTRUCTIONS = """Play the user and produce only the next spoken user utterance.
 Treat the scenario and personality as private background.
 Open with one immediate topic without summarising the scenario.

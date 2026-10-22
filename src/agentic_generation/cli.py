@@ -17,7 +17,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from agentic_generation.config import GenerationSettings, Settings
 from agentic_generation.controller import REVIEWER_SYSTEM_PROMPT
-from agentic_generation.conversation import generate_conversation
+from agentic_generation.conversation import ConversationProgress, generate_conversation
 from agentic_generation.db import DatabaseNotReady, check_database, create_db_engine
 from agentic_generation.openai_adapter import (
     GenerationError,
@@ -128,6 +128,59 @@ def generate_from_scenario(
         "assistant": _prompt_hash(build_assistant_system_prompt()),
         "reviewer": _prompt_hash(REVIEWER_SYSTEM_PROMPT),
     }
+    selected_premise = (
+        {
+            **selection.premise.model_dump(),
+            "generation": {
+                "prompt_version": selection.prompt_version,
+                "model": selection.model,
+                "contract_version": (
+                    CONTRACT_VERSION if selection.premise.contract is not None else None
+                ),
+            },
+        }
+        if selection is not None
+        else None
+    )
+    base_output = {
+        "run": {
+            "id": run_id,
+            "created_at": created_at,
+            "prompt_hashes": prompt_hashes,
+        },
+        "spec": spec.model_dump(),
+        "models": {
+            "user": settings.user_model,
+            "assistant": settings.assistant_model,
+            "reviewer": settings.assistant_model,
+        },
+        "generation_settings": {
+            "max_output_tokens": settings.max_output_tokens,
+            "timeout_seconds": 60.0,
+            "max_retries": 0,
+        },
+        "selected_premise": selected_premise,
+    }
+    progress = ConversationProgress()
+
+    def print_failure(reason: str) -> None:
+        print(
+            json.dumps(
+                {
+                    **base_output,
+                    "status": "failed",
+                    "failure": {
+                        "stage": progress.current_stage,
+                        "reason": reason,
+                    },
+                    "turns": [asdict(turn) for turn in progress.turns],
+                    "termination_reason": None,
+                    "control_trace": [asdict(record) for record in progress.control_trace],
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
 
     client = None
     try:
@@ -158,26 +211,31 @@ def generate_from_scenario(
             opening=selection.premise.opening if selection is not None else None,
             concern=selection.premise.concern if selection is not None else None,
             contract=selection.premise.contract if selection is not None else None,
+            progress=progress,
         )
     except GenerationError as error:
+        print_failure(str(error))
         print(
             f"Conversation generation failed: {error} (run_id={run_id})",
             file=sys.stderr,
         )
         return 1
     except APITimeoutError:
+        print_failure("openai_timeout")
         print(
             f"Conversation generation failed: OpenAI request timed out. (run_id={run_id})",
             file=sys.stderr,
         )
         return 1
     except APIConnectionError:
+        print_failure("openai_connection_error")
         print(
             f"Conversation generation failed: could not connect to OpenAI. (run_id={run_id})",
             file=sys.stderr,
         )
         return 1
     except APIStatusError as error:
+        print_failure(f"openai_http_{error.status_code}")
         print(
             "Conversation generation failed: "
             f"OpenAI returned HTTP {error.status_code}. (run_id={run_id})",
@@ -185,6 +243,7 @@ def generate_from_scenario(
         )
         return 1
     except Exception:
+        print_failure("unexpected_error")
         print(
             "Conversation generation failed. Check OpenAI configuration and availability. "
             f"(run_id={run_id})",
@@ -201,36 +260,9 @@ def generate_from_scenario(
     print(
         json.dumps(
             {
-                "run": {
-                    "id": run_id,
-                    "created_at": created_at,
-                    "prompt_hashes": prompt_hashes,
-                },
-                "spec": spec.model_dump(),
-                "models": {
-                    "user": settings.user_model,
-                    "assistant": settings.assistant_model,
-                    "reviewer": settings.assistant_model,
-                },
-                "generation_settings": {
-                    "max_output_tokens": settings.max_output_tokens,
-                    "timeout_seconds": 60.0,
-                    "max_retries": 0,
-                },
-                "selected_premise": (
-                    {
-                        **selection.premise.model_dump(),
-                        "generation": {
-                            "prompt_version": selection.prompt_version,
-                            "model": selection.model,
-                            "contract_version": (
-                                CONTRACT_VERSION if selection.premise.contract is not None else None
-                            ),
-                        },
-                    }
-                    if selection is not None
-                    else None
-                ),
+                **base_output,
+                "status": "completed",
+                "failure": None,
                 "turns": [asdict(turn) for turn in result.turns],
                 "termination_reason": result.termination_reason,
                 "control_trace": [asdict(record) for record in result.control_trace],

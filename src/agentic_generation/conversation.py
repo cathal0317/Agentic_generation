@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, TypedDict
 
 from agentic_generation.controller import (
@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from agentic_generation.premises import ScenarioContract
 
 Role = Literal["user", "assistant"]
+GenerationStage = Literal["user", "assistant", "reviewer"]
 
 
 class ChatMessage(TypedDict):
@@ -50,6 +51,15 @@ class ConversationResult:
     turns: list[Turn]
     termination_reason: TerminationReason
     control_trace: list[ControlRecord]
+
+
+@dataclass
+class ConversationProgress:
+    """Mutable progress retained if one generation stage fails."""
+
+    turns: list[Turn] = field(default_factory=list)
+    control_trace: list[ControlRecord] = field(default_factory=list)
+    current_stage: GenerationStage | None = None
 
 
 def _user_messages(
@@ -90,14 +100,15 @@ def generate_conversation(
     opening: str | None = None,
     concern: str | None = None,
     contract: ScenarioContract | None = None,
+    progress: ConversationProgress | None = None,
 ) -> ConversationResult:
     """Generate bounded exchanges and stop on a natural end or repeated stalls."""
-    turns = (
-        [Turn(turn_index=0, role="user", text=_validated_output(opening, "user"))]
-        if opening is not None
-        else []
-    )
-    control_trace: list[ControlRecord] = []
+    progress = progress or ConversationProgress()
+    turns = progress.turns
+    control_trace = progress.control_trace
+    if opening is not None:
+        turns.append(Turn(turn_index=0, role="user", text=_validated_output(opening, "user")))
+
     consecutive_stalls = 0
     user_system_prompt = build_user_system_prompt(spec, concern, contract)
     assistant_system_prompt = build_assistant_system_prompt()
@@ -105,6 +116,7 @@ def generate_conversation(
 
     for _ in range(spec.max_exchanges):
         if not turns or turns[-1].role == "assistant":
+            progress.current_stage = "user"
             user_text = _validated_output(
                 user_generator(
                     user_system_prompt,
@@ -114,12 +126,14 @@ def generate_conversation(
             )
             turns.append(Turn(turn_index=len(turns), role="user", text=user_text))
 
+        progress.current_stage = "assistant"
         assistant_text = _validated_output(
             assistant_generator(assistant_system_prompt, _assistant_messages(turns)),
             "assistant",
         )
         turns.append(Turn(turn_index=len(turns), role="assistant", text=assistant_text))
 
+        progress.current_stage = "reviewer"
         assessment = DialogueAssessment.model_validate(reviewer(_public_transcript(turns)))
         control_trace.append(
             ControlRecord(
@@ -128,6 +142,7 @@ def generate_conversation(
                 reason=assessment.reason,
             )
         )
+        progress.current_stage = None
 
         if assessment.decision == "end":
             return ConversationResult(turns, "natural_end", control_trace)

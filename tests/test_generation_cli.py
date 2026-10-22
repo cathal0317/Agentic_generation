@@ -8,7 +8,7 @@ import pytest
 
 import agentic_generation.cli as cli
 from agentic_generation.controller import DialogueAssessment
-from agentic_generation.conversation import OPENING_USER_REQUEST
+from agentic_generation.conversation import OPENING_USER_REQUEST, Turn
 from agentic_generation.openai_adapter import GenerationError
 
 
@@ -121,6 +121,8 @@ def test_generate_command_uses_real_orchestrator_and_prints_json(tmp_path, monke
     assert run_cli(monkeypatch, "generate", str(scenario_path)) == 0
     output = json.loads(capsys.readouterr().out)
 
+    assert output["status"] == "completed"
+    assert output["failure"] is None
     assert constructor_calls == [{"api_key": "test-secret-key", "timeout": 60.0, "max_retries": 0}]
     UUID(output["run"]["id"])
     datetime.fromisoformat(output["run"]["created_at"])
@@ -355,7 +357,10 @@ def test_generate_command_sanitizes_provider_errors_and_closes_client(
 
     assert run_cli(monkeypatch, "generate", str(scenario_path)) == 1
     captured = capsys.readouterr()
-    assert captured.out == ""
+    failure = json.loads(captured.out)
+    assert failure["status"] == "failed"
+    assert failure["failure"]["stage"] == "user"
+    assert failure["turns"] == []
     assert "Conversation generation failed" in captured.err
     assert "raw provider body" not in captured.err
     assert "test-secret-key" not in captured.err
@@ -369,15 +374,24 @@ def test_generate_command_reports_safe_generation_stage(tmp_path, monkeypatch, c
     monkeypatch.setattr(cli, "OpenAI", lambda **kwargs: client)
 
     def incomplete_generation(*args, **kwargs):
-        raise GenerationError("user response did not complete: max_output_tokens")
+        progress = kwargs["progress"]
+        progress.current_stage = "assistant"
+        progress.turns.append(Turn(turn_index=0, role="user", text="Partial turn"))
+        raise GenerationError("assistant response did not complete: max_output_tokens")
 
     monkeypatch.setattr(cli, "generate_conversation", incomplete_generation)
 
     assert run_cli(monkeypatch, "generate", str(scenario_path)) == 1
     captured = capsys.readouterr()
-    assert captured.out == ""
+    failure = json.loads(captured.out)
+    assert failure["status"] == "failed"
+    assert failure["failure"] == {
+        "stage": "assistant",
+        "reason": "assistant response did not complete: max_output_tokens",
+    }
+    assert failure["turns"] == [{"turn_index": 0, "role": "user", "text": "Partial turn"}]
     assert (
-        "Conversation generation failed: user response did not complete: max_output_tokens"
+        "Conversation generation failed: assistant response did not complete: max_output_tokens"
     ) in captured.err
     assert "run_id=" in captured.err
     assert client.closed
@@ -414,9 +428,11 @@ def test_generate_command_classifies_provider_errors_safely(
 
     assert run_cli(monkeypatch, "generate", str(scenario_path)) == 1
     captured = capsys.readouterr()
+    failure = json.loads(captured.out)
+    assert failure["status"] == "failed"
     assert expected_message in captured.err
-    assert "raw provider body" not in captured.err
-    assert "test-secret-key" not in captured.err
+    assert "raw provider body" not in captured.out + captured.err
+    assert "test-secret-key" not in captured.out + captured.err
     assert client.closed
 
 
@@ -432,7 +448,9 @@ def test_review_errors_use_the_safe_generation_failure_path(tmp_path, monkeypatc
 
     assert run_cli(monkeypatch, "generate", str(scenario_path)) == 1
     captured = capsys.readouterr()
-    assert captured.out == ""
+    failure = json.loads(captured.out)
+    assert failure["failure"]["stage"] == "reviewer"
+    assert len(failure["turns"]) == 2
     assert "Conversation generation failed" in captured.err
     assert "raw review response" not in captured.err
     assert client.closed

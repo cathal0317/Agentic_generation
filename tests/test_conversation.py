@@ -5,6 +5,7 @@ from agentic_generation.controller import DialogueAssessment
 from agentic_generation.conversation import (
     CONTINUATION_USER_REQUEST,
     OPENING_USER_REQUEST,
+    ConversationProgress,
     generate_conversation,
 )
 from agentic_generation.premises import ScenarioContract, ScenarioTension
@@ -270,6 +271,7 @@ def test_selected_concern_and_contract_are_private_to_user_generator():
 @pytest.mark.parametrize("invalid_output", [None, 7, "", " \n "])
 def test_invalid_user_output_stops_generation(invalid_output):
     calls = []
+    progress = ConversationProgress()
 
     def user_generator(system_prompt, messages):
         calls.append("user")
@@ -286,13 +288,17 @@ def test_invalid_user_output_stops_generation(invalid_output):
             user_generator,
             assistant_generator,
             continue_review,
+            progress=progress,
         )
 
     assert calls == ["user"]
+    assert progress.current_stage == "user"
+    assert progress.turns == []
 
 
 def test_failed_assistant_call_stops_generation_and_propagates_error():
     calls = []
+    progress = ConversationProgress()
 
     def user_generator(system_prompt, messages):
         calls.append("user")
@@ -308,9 +314,35 @@ def test_failed_assistant_call_stops_generation_and_propagates_error():
             user_generator,
             assistant_generator,
             continue_review,
+            progress=progress,
         )
 
     assert calls == ["user", "assistant"]
+    assert progress.current_stage == "assistant"
+    assert [(turn.role, turn.text) for turn in progress.turns] == [("user", "First user turn")]
+
+
+def test_failed_reviewer_retains_completed_exchange():
+    progress = ConversationProgress()
+
+    def reviewer(transcript):
+        raise RuntimeError("review failed")
+
+    with pytest.raises(RuntimeError, match="review failed"):
+        generate_conversation(
+            ConversationSpec(scenario="A test scenario.", max_exchanges=2),
+            lambda system_prompt, messages: "First user turn",
+            lambda system_prompt, messages: "First assistant turn",
+            reviewer,
+            progress=progress,
+        )
+
+    assert progress.current_stage == "reviewer"
+    assert [(turn.role, turn.text) for turn in progress.turns] == [
+        ("user", "First user turn"),
+        ("assistant", "First assistant turn"),
+    ]
+    assert progress.control_trace == []
 
 
 def test_invalid_assistant_output_stops_before_the_next_user_turn():
