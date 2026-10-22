@@ -16,7 +16,7 @@ from agentic_generation.contrastive.catalog import CATALOG
 from agentic_generation.contrastive.models import ContrastivePair
 from agentic_generation.openai_adapter import GenerationError
 
-PROMPT_VERSION = "contrastive-generation-v1"
+PROMPT_VERSION = "contrastive-generation-v2"
 SYSTEM_PROMPT = """Generate candidate utterance pairs for a speech-to-speech
 emotion-adaptation dataset.
 
@@ -50,6 +50,13 @@ For every candidate:
 11. Ensure that the appraisal difference would lead to meaningfully different
     conversational response directions.
 
+Keep the observable event and its outcome identical across both conditions.
+Vary the speaker's preferences, goals, or personal stakes to explain the
+different appraisals.
+
+Do not create the contrast by inventing different event outcomes, such as
+a signed contract in one condition and a rejected contract in the other.
+
 For each condition:
 
 - appraisal must use the supplied appraisal label exactly;
@@ -68,6 +75,21 @@ For each condition:
 - response_goals must not assert or depend on private facts unavailable to the
   assistant;
 - do not generate exact assistant response sentences.
+
+When writing response_goals, use only the shared utterance and the broad
+appraisal that the intended vocal delivery could convey.
+
+Treat private_context as unavailable to the responding assistant.
+Do not assert private facts or embed them as assumptions in questions.
+When the reason for the appraisal is unknown, invite the speaker to explain it.
+
+Assume a conversational assistant with no physical presence, shared workplace
+role, or external-action tools.
+
+Write response_goals as concise descriptions of possible conversational moves.
+Do not include quoted response sentences.
+Do not assume the assistant can visit, move objects, contact people, or change
+schedules. Discussing options or helping the speaker think is allowed.
 
 Before returning a candidate, silently discard it if:
 
