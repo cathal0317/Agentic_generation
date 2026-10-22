@@ -17,25 +17,74 @@ from agentic_generation.contrastive.models import ContrastivePair
 from agentic_generation.openai_adapter import GenerationError
 
 PROMPT_VERSION = "contrastive-generation-v1"
-SYSTEM_PROMPT = """Generate contrastive utterance-pair candidates using only the supplied axis.
-Use the supplied appraisal axis and both appraisal labels exactly as provided.
-Generate the requested number of distinct events and situations; do not fill the batch with
-simple paraphrases.
-Write short, natural English utterances whose events are clear but whose appraisal is not settled.
-Do not state the speaker's emotion or appraisal directly in the utterance.
-The same shared utterance must be natural under both appraisals.
-Keep the event itself unchanged between conditions; change the speaker's appraisal of it.
-Treat private_context as private generation background, not information available to an assistant.
-Use vocal_direction to guide a natural spoken performance.
-Do not assume that a voice can communicate specific hidden facts.
-For each condition, propose at least two distinct possible response_goals.
-Treat response_goals as alternative response directions, not steps that must all be performed.
-Every response direction must make sense without already knowing the private background.
-The appropriate response directions must differ meaningfully between the two appraisals.
-Do not generate exact assistant responses or self-evaluations.
+SYSTEM_PROMPT = """Generate candidate utterance pairs for a speech-to-speech
+emotion-adaptation dataset.
+
+The appraisal contrast is supplied by the caller. Use only the supplied
+appraisal_axis, appraisal_a, and appraisal_b. Do not choose, rename, reverse,
+or invent another contrast.
 
 Core relationship:
+
 Same words + different vocal appraisal -> different appropriate response.
+
+Generate the requested number of distinct candidates. Each candidate must
+describe a different event or situation; do not fill the batch with paraphrases
+of the same idea.
+
+For every candidate:
+
+1. Write one short, natural spoken English utterance.
+2. Make the event clear enough to understand without additional context.
+3. Leave the speaker's evaluation of the event unsettled in the text alone.
+4. Use exactly one shared utterance for both appraisal conditions.
+5. Make both supplied appraisals plausible interpretations of that same event.
+6. Do not force an appraisal onto an event when the interpretation would feel
+   contrived.
+7. Do not include explicit emotion or appraisal statements.
+8. Avoid evaluative leakage such as "fortunately", "annoyingly",
+   "I'm excited", "I'm worried", "I love that", or "I hate that".
+9. Use wording that someone could naturally say in an ordinary conversation.
+10. Prefer events for which the broad appraisal contrast could plausibly be
+    expressed through vocal delivery.
+11. Ensure that the appraisal difference would lead to meaningfully different
+    conversational response directions.
+
+For each condition:
+
+- appraisal must use the supplied appraisal label exactly;
+- private_context should briefly explain why the speaker holds that appraisal;
+- private_context is acting and generation background, not information
+  available to the responding assistant;
+- vocal_direction should describe a natural spoken performance that conveys
+  the broad appraisal;
+- vocal_direction may refer to features such as energy, pace, hesitation,
+  emphasis, pitch movement, or vocal tension when useful;
+- do not assume that vocal delivery can communicate the exact hidden facts in
+  private_context;
+- provide at least two distinct response_goals that would be appropriate given
+  the utterance and audible appraisal;
+- response_goals are alternative response directions, not a sequence of steps;
+- response_goals must not assert or depend on private facts unavailable to the
+  assistant;
+- do not generate exact assistant response sentences.
+
+Before returning a candidate, silently discard it if:
+
+- either appraisal interpretation feels unnatural or contrived;
+- the utterance itself reveals which appraisal is intended;
+- the two conditions would require different wording;
+- the broad contrast could not plausibly be conveyed through spoken delivery;
+- both conditions would receive essentially the same response;
+- an appropriate response would need to invent or assume hidden facts.
+
+Return only candidates that satisfy these generation constraints.
+Do not include quality scores, pass/fail judgments, explanations, or any fields
+outside the required structured output.
+
+These are candidate-generation instructions, not proof of quality. Actual
+naturalness, tone sufficiency, and response differentiation will be evaluated
+separately.
 """
 NonEmptyText = Annotated[str, Field(min_length=1)]
 
