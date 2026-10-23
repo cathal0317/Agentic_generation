@@ -295,6 +295,11 @@ def main() -> int:
     )
     contrastive_parser.add_argument("--contrast-id", required=True)
     contrastive_parser.add_argument("--count", required=True, type=int)
+    response_goals_parser = subcommands.add_parser(
+        "regenerate-response-goals",
+        help="Compare stored and regenerated contrastive response goals",
+    )
+    response_goals_parser.add_argument("path", type=Path)
     args = parser.parse_args()
 
     if args.command == "validate-scenario":
@@ -307,6 +312,12 @@ def main() -> int:
         from agentic_generation.contrastive.cli import generate_contrastive
 
         return generate_contrastive(args.contrast_id, args.count)
+    if args.command == "regenerate-response-goals":
+        from agentic_generation.contrastive.response_goals_cli import (
+            regenerate_response_goals,
+        )
+
+        return regenerate_response_goals(args.path)
 
     if not Path("alembic.ini").is_file():
         print("Run this command from the repository root containing alembic.ini.", file=sys.stderr)
