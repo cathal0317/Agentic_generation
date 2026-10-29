@@ -95,31 +95,21 @@ def _publish_without_overwrite(path: Path, wav_bytes: bytes) -> None:
         temporary_path.unlink(missing_ok=True)
 
 
-def synthesize_wav(
-    client: GeminiTtsClient,
+def build_synthesis_request(
     *,
     text: str,
     vocal_direction: str,
     voice: str,
     model: str,
-    output_path: str | Path,
-) -> GeminiTtsResult:
-    """Synthesize one verbatim utterance and atomically save a complete WAV."""
+) -> dict[str, object]:
+    """Build the Gemini interaction request for one styled utterance."""
     text = _required(text, "text")
     vocal_direction = _required(vocal_direction, "vocal_direction")
     voice = _required(voice, "voice")
     model = _required(model, "model")
-    path = Path(output_path)
-    if path.suffix.lower() != ".wav":
-        raise ValueError("output_path must use the .wav extension")
-    if path.exists():
-        raise FileExistsError(f"output_path already exists: {path}")
-    if not path.parent.exists():
-        raise FileNotFoundError(f"output directory does not exist: {path.parent}")
-
-    interaction = client.interactions.create(
-        model=model,
-        input=[
+    return {
+        "model": model,
+        "input": [
             {
                 "type": "user_input",
                 "content": [
@@ -136,9 +126,36 @@ def synthesize_wav(
                 ],
             }
         ],
-        response_format={"type": "audio", "mime_type": "audio/wav"},
-        generation_config={"speech_config": [{"voice": voice}]},
+        "response_format": {"type": "audio", "mime_type": "audio/wav"},
+        "generation_config": {"speech_config": [{"voice": voice}]},
+    }
+
+
+def synthesize_wav(
+    client: GeminiTtsClient,
+    *,
+    text: str,
+    vocal_direction: str,
+    voice: str,
+    model: str,
+    output_path: str | Path,
+) -> GeminiTtsResult:
+    """Synthesize one verbatim utterance and atomically save a complete WAV."""
+    request = build_synthesis_request(
+        text=text,
+        vocal_direction=vocal_direction,
+        voice=voice,
+        model=model,
     )
+    path = Path(output_path)
+    if path.suffix.lower() != ".wav":
+        raise ValueError("output_path must use the .wav extension")
+    if path.exists():
+        raise FileExistsError(f"output_path already exists: {path}")
+    if not path.parent.exists():
+        raise FileNotFoundError(f"output directory does not exist: {path.parent}")
+
+    interaction = client.interactions.create(**request)
     if getattr(interaction, "status", "completed") != "completed":
         raise GeminiTtsError("Gemini TTS interaction did not complete")
     wav_bytes, mime_type, rate, channels, width, frames = _decode_wav(
