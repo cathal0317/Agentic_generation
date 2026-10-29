@@ -1,12 +1,15 @@
 import json
 import sys
+from datetime import datetime
 from types import SimpleNamespace
+from uuid import UUID
 
 import pytest
 
 import agentic_generation.cli as cli
 from agentic_generation.controller import DialogueAssessment
-from agentic_generation.conversation import OPENING_USER_REQUEST
+from agentic_generation.conversation import OPENING_USER_REQUEST, Turn
+from agentic_generation.openai_adapter import GenerationError
 
 
 class FakeResponses:
@@ -55,7 +58,16 @@ def write_scenario(tmp_path, max_exchanges=1):
     return path
 
 
-def write_premises(tmp_path, scenario_path):
+def write_premises(tmp_path, scenario_path, contract=None):
+    premise = {
+        "id": "p1",
+        "concern": "PRIVATE_SELECTED_CONCERN",
+        "opening": "The situation yesterday is still bothering me.",
+        "source_quotes": ["A test scenario."],
+    }
+    if contract is not None:
+        premise["contract"] = contract
+
     path = tmp_path / "premises.json"
     path.write_text(
         json.dumps(
@@ -65,14 +77,7 @@ def write_premises(tmp_path, scenario_path):
                 "max_output_tokens": 512,
                 "prompt_version": "premises-v1",
                 "review_status": "unreviewed",
-                "premises": [
-                    {
-                        "id": "p1",
-                        "concern": "PRIVATE_SELECTED_CONCERN",
-                        "opening": "The situation yesterday is still bothering me.",
-                        "source_quotes": ["A test scenario."],
-                    }
-                ],
+                "premises": [premise],
             }
         ),
         encoding="utf-8",
@@ -116,12 +121,23 @@ def test_generate_command_uses_real_orchestrator_and_prints_json(tmp_path, monke
     assert run_cli(monkeypatch, "generate", str(scenario_path)) == 0
     output = json.loads(capsys.readouterr().out)
 
+    assert output["status"] == "completed"
+    assert output["failure"] is None
     assert constructor_calls == [{"api_key": "test-secret-key", "timeout": 60.0, "max_retries": 0}]
+    UUID(output["run"]["id"])
+    datetime.fromisoformat(output["run"]["created_at"])
+    assert set(output["run"]["prompt_hashes"]) == {"user", "assistant", "reviewer"}
+    assert all(len(prompt_hash) == 64 for prompt_hash in output["run"]["prompt_hashes"].values())
     assert output["spec"]["scenario"] == "A test scenario."
     assert output["models"] == {
         "user": "user-model",
         "assistant": "assistant-model",
         "reviewer": "assistant-model",
+    }
+    assert output["generation_settings"] == {
+        "max_output_tokens": 456,
+        "timeout_seconds": 60.0,
+        "max_retries": 0,
     }
     assert output["turns"] == [
         {"turn_index": 0, "role": "user", "text": "Hello from the user."},
@@ -191,9 +207,11 @@ def test_generate_command_runs_selected_premise_and_records_provenance(
         "concern": "PRIVATE_SELECTED_CONCERN",
         "opening": "The situation yesterday is still bothering me.",
         "source_quotes": ["A test scenario."],
+        "contract": None,
         "generation": {
             "prompt_version": "premises-v1",
             "model": "candidate-model",
+            "contract_version": None,
         },
     }
     assert [call["model"] for call in client.responses.calls] == [
@@ -206,6 +224,88 @@ def test_generate_command_runs_selected_premise_and_records_provenance(
         [client.responses.calls[0], client.responses.calls[2]]
     )
     assert "PRIVATE_SELECTED_CONCERN" not in repr(client.responses.parse_calls)
+
+
+def test_generate_command_passes_and_records_private_contract(tmp_path, monkeypatch, capsys):
+    scenario_path = write_scenario(tmp_path, max_exchanges=2)
+    contract = {
+        "focus": "PRIVATE_FOCUS",
+        "private_goal": "PRIVATE_GOAL",
+        "tension": {
+            "wants": "PRIVATE_WANT",
+            "worries_about": "PRIVATE_WORRY",
+        },
+        "disclosure_policy": ["PRIVATE_DISCLOSURE"],
+        "change_conditions": ["PRIVATE_CHANGE"],
+        "source_quotes": ["A test scenario."],
+    }
+    premise_path = write_premises(tmp_path, scenario_path, contract)
+    configure_generation(monkeypatch)
+    client = FakeClient(
+        [
+            "A public assistant response.",
+            "A later user response.",
+            "A final assistant response.",
+        ],
+        assessments=[
+            DialogueAssessment(decision="continue", reason="The dialogue continues."),
+            DialogueAssessment(decision="end", reason="The dialogue is complete."),
+        ],
+    )
+    monkeypatch.setattr(cli, "OpenAI", lambda **kwargs: client)
+
+    assert (
+        run_cli(
+            monkeypatch,
+            "generate",
+            str(scenario_path),
+            "--premises",
+            str(premise_path),
+            "--premise-id",
+            "p1",
+        )
+        == 0
+    )
+    output = json.loads(capsys.readouterr().out)
+
+    assert output["selected_premise"]["contract"] == contract
+    assert output["selected_premise"]["generation"]["contract_version"] == ("scenario-contract-v1")
+    assert output["turns"][0]["text"] == ("The situation yesterday is still bothering me.")
+    assert "PRIVATE_FOCUS" in client.responses.calls[1]["instructions"]
+    assert "PRIVATE_FOCUS" not in repr([client.responses.calls[0], client.responses.calls[2]])
+    assert "PRIVATE_FOCUS" not in repr(client.responses.parse_calls)
+
+
+def test_generate_rejects_ungrounded_contract_before_provider_call(tmp_path, monkeypatch, capsys):
+    scenario_path = write_scenario(tmp_path)
+    contract = {
+        "focus": "A private focus.",
+        "private_goal": "A private goal.",
+        "tension": {"wants": "Independence.", "worries_about": "Falling."},
+        "disclosure_policy": ["Disclose details gradually."],
+        "change_conditions": ["Consider relevant suggestions."],
+        "source_quotes": ["This quotation is absent."],
+    }
+    premise_path = write_premises(tmp_path, scenario_path, contract)
+
+    def unexpected_client(**kwargs):
+        raise AssertionError("provider must not be called")
+
+    monkeypatch.setattr(cli, "OpenAI", unexpected_client)
+
+    assert (
+        run_cli(
+            monkeypatch,
+            "generate",
+            str(scenario_path),
+            "--premises",
+            str(premise_path),
+            "--premise-id",
+            "p1",
+        )
+        == 2
+    )
+    assert "contract supporting quotation" in capsys.readouterr().err
 
 
 def test_generate_command_requires_both_premise_options(tmp_path, monkeypatch, capsys):
@@ -257,10 +357,82 @@ def test_generate_command_sanitizes_provider_errors_and_closes_client(
 
     assert run_cli(monkeypatch, "generate", str(scenario_path)) == 1
     captured = capsys.readouterr()
-    assert captured.out == ""
+    failure = json.loads(captured.out)
+    assert failure["status"] == "failed"
+    assert failure["failure"]["stage"] == "user"
+    assert failure["turns"] == []
     assert "Conversation generation failed" in captured.err
     assert "raw provider body" not in captured.err
     assert "test-secret-key" not in captured.err
+    assert client.closed
+
+
+def test_generate_command_reports_safe_generation_stage(tmp_path, monkeypatch, capsys):
+    scenario_path = write_scenario(tmp_path)
+    configure_generation(monkeypatch)
+    client = FakeClient()
+    monkeypatch.setattr(cli, "OpenAI", lambda **kwargs: client)
+
+    def incomplete_generation(*args, **kwargs):
+        progress = kwargs["progress"]
+        progress.current_stage = "assistant"
+        progress.turns.append(Turn(turn_index=0, role="user", text="Partial turn"))
+        raise GenerationError("assistant response did not complete: max_output_tokens")
+
+    monkeypatch.setattr(cli, "generate_conversation", incomplete_generation)
+
+    assert run_cli(monkeypatch, "generate", str(scenario_path)) == 1
+    captured = capsys.readouterr()
+    failure = json.loads(captured.out)
+    assert failure["status"] == "failed"
+    assert failure["failure"] == {
+        "stage": "assistant",
+        "reason": "assistant response did not complete: max_output_tokens",
+    }
+    assert failure["turns"] == [{"turn_index": 0, "role": "user", "text": "Partial turn"}]
+    assert (
+        "Conversation generation failed: assistant response did not complete: max_output_tokens"
+    ) in captured.err
+    assert "run_id=" in captured.err
+    assert client.closed
+
+
+@pytest.mark.parametrize(
+    ("error_name", "expected_message"),
+    [
+        ("APIConnectionError", "could not connect to OpenAI"),
+        ("APITimeoutError", "OpenAI request timed out"),
+        ("APIStatusError", "OpenAI returned HTTP 429"),
+    ],
+)
+def test_generate_command_classifies_provider_errors_safely(
+    error_name,
+    expected_message,
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    class SafeProviderError(Exception):
+        status_code = 429
+
+    scenario_path = write_scenario(tmp_path)
+    configure_generation(monkeypatch)
+    client = FakeClient()
+    monkeypatch.setattr(cli, "OpenAI", lambda **kwargs: client)
+    monkeypatch.setattr(cli, error_name, SafeProviderError)
+
+    def failed_generation(*args, **kwargs):
+        raise SafeProviderError("raw provider body with test-secret-key")
+
+    monkeypatch.setattr(cli, "generate_conversation", failed_generation)
+
+    assert run_cli(monkeypatch, "generate", str(scenario_path)) == 1
+    captured = capsys.readouterr()
+    failure = json.loads(captured.out)
+    assert failure["status"] == "failed"
+    assert expected_message in captured.err
+    assert "raw provider body" not in captured.out + captured.err
+    assert "test-secret-key" not in captured.out + captured.err
     assert client.closed
 
 
@@ -276,7 +448,9 @@ def test_review_errors_use_the_safe_generation_failure_path(tmp_path, monkeypatc
 
     assert run_cli(monkeypatch, "generate", str(scenario_path)) == 1
     captured = capsys.readouterr()
-    assert captured.out == ""
+    failure = json.loads(captured.out)
+    assert failure["failure"]["stage"] == "reviewer"
+    assert len(failure["turns"]) == 2
     assert "Conversation generation failed" in captured.err
     assert "raw review response" not in captured.err
     assert client.closed

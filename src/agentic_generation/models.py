@@ -24,6 +24,7 @@ class Conversation(Base):
     initial_condition: Mapped[dict[str, Any]] = mapped_column(JSONB)
     # Only information explicitly given to the assistant belongs here.
     initial_context: Mapped[str] = mapped_column(Text)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

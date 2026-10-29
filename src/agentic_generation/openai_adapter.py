@@ -16,10 +16,19 @@ class GenerationError(RuntimeError):
     """The provider returned no usable completed generation."""
 
 
+def _incomplete_reason(response: object) -> str:
+    details = getattr(response, "incomplete_details", None)
+    reason = getattr(details, "reason", None)
+    if reason in {"max_output_tokens", "content_filter"}:
+        return reason
+    return "unknown"
+
+
 def create_text_generator(
     client: OpenAI,
     model: str,
     max_output_tokens: int,
+    stage: str = "generation",
 ) -> TextGenerator:
     """Create a model-specific generator backed by the Responses API."""
 
@@ -32,9 +41,10 @@ def create_text_generator(
             max_output_tokens=max_output_tokens,
         )
         if response.status != "completed":
-            raise GenerationError("OpenAI response did not complete")
+            reason = _incomplete_reason(response)
+            raise GenerationError(f"{stage} response did not complete: {reason}")
         if not isinstance(response.output_text, str) or not response.output_text.strip():
-            raise GenerationError("OpenAI response contained no text")
+            raise GenerationError(f"{stage} response contained no text")
         return response.output_text
 
     return generate
@@ -62,7 +72,8 @@ def create_dialogue_reviewer(
             max_output_tokens=max_output_tokens,
         )
         if response.status != "completed":
-            raise GenerationError("OpenAI review did not complete")
+            reason = _incomplete_reason(response)
+            raise GenerationError(f"reviewer response did not complete: {reason}")
         if not isinstance(response.output_parsed, DialogueAssessment):
             raise GenerationError("OpenAI review contained no valid assessment")
         return response.output_parsed

@@ -5,8 +5,10 @@ from agentic_generation.controller import DialogueAssessment
 from agentic_generation.conversation import (
     CONTINUATION_USER_REQUEST,
     OPENING_USER_REQUEST,
+    ConversationProgress,
     generate_conversation,
 )
+from agentic_generation.premises import ScenarioContract, ScenarioTension
 from agentic_generation.prompts import build_assistant_system_prompt
 from agentic_generation.spec import ConversationSpec
 
@@ -212,8 +214,28 @@ def test_user_generation_continues_after_supplied_opening():
     assert [turn.turn_index for turn in result.turns] == [0, 1, 2, 3]
 
 
-def test_selected_concern_is_private_to_user_generator():
+def test_selected_concern_and_contract_are_private_to_user_generator():
     private_concern = "PRIVATE_SELECTED_CONCERN"
+    contract = ScenarioContract(
+        focus="PRIVATE_FOCUS",
+        private_goal="PRIVATE_GOAL",
+        tension=ScenarioTension(
+            wants="PRIVATE_WANT",
+            worries_about="PRIVATE_WORRY",
+        ),
+        disclosure_policy=["PRIVATE_DISCLOSURE_POLICY"],
+        change_conditions=["PRIVATE_CHANGE_CONDITION"],
+        source_quotes=["A private scenario."],
+    )
+    private_values = [
+        private_concern,
+        contract.focus,
+        contract.private_goal,
+        contract.tension.wants,
+        contract.tension.worries_about,
+        *contract.disclosure_policy,
+        *contract.change_conditions,
+    ]
     user_prompts = []
     assistant_requests = []
     reviewer_transcripts = []
@@ -237,17 +259,19 @@ def test_selected_concern_is_private_to_user_generator():
         reviewer,
         opening="Something from yesterday is bothering me.",
         concern=private_concern,
+        contract=contract,
     )
 
     assert len(user_prompts) == 1
-    assert private_concern in user_prompts[0]
-    assert private_concern not in repr(assistant_requests)
-    assert private_concern not in repr(reviewer_transcripts)
+    assert all(value in user_prompts[0] for value in private_values)
+    assert all(value not in repr(assistant_requests) for value in private_values)
+    assert all(value not in repr(reviewer_transcripts) for value in private_values)
 
 
 @pytest.mark.parametrize("invalid_output", [None, 7, "", " \n "])
 def test_invalid_user_output_stops_generation(invalid_output):
     calls = []
+    progress = ConversationProgress()
 
     def user_generator(system_prompt, messages):
         calls.append("user")
@@ -264,13 +288,17 @@ def test_invalid_user_output_stops_generation(invalid_output):
             user_generator,
             assistant_generator,
             continue_review,
+            progress=progress,
         )
 
     assert calls == ["user"]
+    assert progress.current_stage == "user"
+    assert progress.turns == []
 
 
 def test_failed_assistant_call_stops_generation_and_propagates_error():
     calls = []
+    progress = ConversationProgress()
 
     def user_generator(system_prompt, messages):
         calls.append("user")
@@ -286,9 +314,35 @@ def test_failed_assistant_call_stops_generation_and_propagates_error():
             user_generator,
             assistant_generator,
             continue_review,
+            progress=progress,
         )
 
     assert calls == ["user", "assistant"]
+    assert progress.current_stage == "assistant"
+    assert [(turn.role, turn.text) for turn in progress.turns] == [("user", "First user turn")]
+
+
+def test_failed_reviewer_retains_completed_exchange():
+    progress = ConversationProgress()
+
+    def reviewer(transcript):
+        raise RuntimeError("review failed")
+
+    with pytest.raises(RuntimeError, match="review failed"):
+        generate_conversation(
+            ConversationSpec(scenario="A test scenario.", max_exchanges=2),
+            lambda system_prompt, messages: "First user turn",
+            lambda system_prompt, messages: "First assistant turn",
+            reviewer,
+            progress=progress,
+        )
+
+    assert progress.current_stage == "reviewer"
+    assert [(turn.role, turn.text) for turn in progress.turns] == [
+        ("user", "First user turn"),
+        ("assistant", "First assistant turn"),
+    ]
+    assert progress.control_trace == []
 
 
 def test_invalid_assistant_output_stops_before_the_next_user_turn():

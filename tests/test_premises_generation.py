@@ -4,7 +4,12 @@ from types import SimpleNamespace
 import pytest
 
 from agentic_generation.openai_adapter import GenerationError
-from agentic_generation.premises import Premise, PremiseBatch, propose_premises
+from agentic_generation.premises import (
+    Premise,
+    PremiseBatch,
+    StoredPremise,
+    propose_premises,
+)
 from agentic_generation.spec import ConversationSpec
 
 
@@ -66,6 +71,11 @@ def test_propose_premises_uses_one_structured_request(spec, batch):
     assert call["max_output_tokens"] == 512
     assert json.loads(call["input"][0]["content"]) == spec.model_dump()
     assert responses.create_calls == []
+
+
+def test_generation_schema_excludes_manual_contract():
+    assert "contract" not in Premise.model_json_schema()["properties"]
+    assert "contract" in StoredPremise.model_json_schema()["properties"]
 
 
 @pytest.mark.parametrize("status", ["incomplete", "failed"])

@@ -73,6 +73,26 @@ def test_generator_rejects_incomplete_or_empty_responses(response):
         generator("Instructions", [{"role": "user", "content": "Hello"}])
 
 
+def test_generator_reports_stage_and_safe_incomplete_reason():
+    response = SimpleNamespace(
+        status="incomplete",
+        output_text="",
+        incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+    )
+    generator = create_text_generator(
+        FakeClient(FakeResponses(response)),
+        "model",
+        2048,
+        stage="user",
+    )
+
+    with pytest.raises(
+        GenerationError,
+        match="user response did not complete: max_output_tokens",
+    ):
+        generator("Instructions", [{"role": "user", "content": "Hello"}])
+
+
 def test_generator_propagates_provider_errors():
     provider_error = RuntimeError("provider failed")
     generator = create_text_generator(
@@ -135,4 +155,23 @@ def test_reviewer_rejects_incomplete_refused_or_invalid_responses(response):
     )
 
     with pytest.raises(GenerationError):
+        reviewer([{"turn_index": 0, "role": "user", "text": "Hello"}])
+
+
+def test_reviewer_reports_safe_incomplete_reason():
+    response = SimpleNamespace(
+        status="incomplete",
+        output_parsed=None,
+        incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+    )
+    reviewer = create_dialogue_reviewer(
+        FakeClient(FakeResponses(parsed_response=response)),
+        "assistant-model",
+        2048,
+    )
+
+    with pytest.raises(
+        GenerationError,
+        match="reviewer response did not complete: max_output_tokens",
+    ):
         reviewer([{"turn_index": 0, "role": "user", "text": "Hello"}])
