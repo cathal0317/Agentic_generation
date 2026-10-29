@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import agentic_generation.tts.gemini as gemini
 from agentic_generation.tts.gemini import GeminiTtsError, synthesize_wav
 
 
@@ -19,18 +20,21 @@ def make_wav_bytes():
 
 
 class FakeInteractions:
-    def __init__(self, response):
+    def __init__(self, response, on_create=None):
         self.response = response
+        self.on_create = on_create
         self.calls = []
 
     def create(self, **kwargs):
         self.calls.append(kwargs)
+        if self.on_create is not None:
+            self.on_create()
         return self.response
 
 
 class FakeClient:
-    def __init__(self, response):
-        self.interactions = FakeInteractions(response)
+    def __init__(self, response, on_create=None):
+        self.interactions = FakeInteractions(response, on_create)
 
 
 def audio_response(data=None, mime_type="audio/wav", status="completed"):
@@ -44,7 +48,8 @@ def audio_response(data=None, mime_type="audio/wav", status="completed"):
 
 
 def test_synthesizes_verbatim_styled_text_and_saves_playable_wav(tmp_path):
-    client = FakeClient(audio_response(make_wav_bytes()))
+    wav_bytes = make_wav_bytes()
+    client = FakeClient(audio_response(wav_bytes))
     output_path = tmp_path / "speech.wav"
 
     result = synthesize_wav(
@@ -82,6 +87,7 @@ def test_synthesizes_verbatim_styled_text_and_saves_playable_wav(tmp_path):
     with wave.open(str(output_path), "rb") as wav:
         assert (wav.getnchannels(), wav.getsampwidth(), wav.getframerate()) == (1, 2, 24000)
         assert wav.getnframes() == 24
+    assert output_path.read_bytes() == wav_bytes
     assert result.output_path == output_path
     assert result.model == "gemini-3.8-flash-tts"
     assert result.voice == "Kore"
@@ -136,6 +142,71 @@ def test_rejects_existing_output_without_calling_api(tmp_path):
 
     assert client.interactions.calls == []
     assert output_path.read_bytes() == b"existing"
+
+
+def test_preserves_destination_created_while_api_call_is_in_flight(tmp_path):
+    output_path = tmp_path / "speech.wav"
+    client = FakeClient(
+        audio_response(make_wav_bytes()),
+        on_create=lambda: output_path.write_bytes(b"created by another process"),
+    )
+
+    with pytest.raises(FileExistsError):
+        synthesize_wav(
+            client,
+            text="Hello.",
+            vocal_direction="Neutral.",
+            voice="Kore",
+            model="gemini-3.8-flash-tts",
+            output_path=output_path,
+        )
+
+    assert output_path.read_bytes() == b"created by another process"
+    assert list(tmp_path.glob(".speech.wav.*.tmp")) == []
+
+
+@pytest.mark.parametrize("failure_point", ["write", "publish"])
+def test_cleans_only_temporary_file_when_storage_fails(tmp_path, monkeypatch, failure_point):
+    output_path = tmp_path / "speech.wav"
+    client = FakeClient(audio_response(make_wav_bytes()))
+
+    def fail(*_args):
+        raise OSError(f"{failure_point} failed")
+
+    monkeypatch.setattr(
+        gemini.os,
+        "write" if failure_point == "write" else "link",
+        fail,
+    )
+    with pytest.raises(OSError, match=failure_point):
+        synthesize_wav(
+            client,
+            text="Hello.",
+            vocal_direction="Neutral.",
+            voice="Kore",
+            model="gemini-3.8-flash-tts",
+            output_path=output_path,
+        )
+
+    assert not output_path.exists()
+    assert list(tmp_path.glob(".speech.wav.*.tmp")) == []
+
+
+def test_rejects_truncated_wav_frame_data_without_file(tmp_path):
+    output_path = tmp_path / "speech.wav"
+    client = FakeClient(audio_response(make_wav_bytes()[:-2]))
+
+    with pytest.raises(GeminiTtsError, match="truncated"):
+        synthesize_wav(
+            client,
+            text="Hello.",
+            vocal_direction="Neutral.",
+            voice="Kore",
+            model="gemini-3.8-flash-tts",
+            output_path=output_path,
+        )
+
+    assert not output_path.exists()
 
 
 @pytest.mark.parametrize(

@@ -2,6 +2,8 @@
 
 import base64
 import binascii
+import os
+import tempfile
 import wave
 from dataclasses import dataclass
 from io import BytesIO
@@ -54,14 +56,43 @@ def _decode_wav(audio) -> tuple[bytes, str, int, int, int, int]:
     try:
         with wave.open(BytesIO(wav_bytes), "rb") as wav:
             channels = wav.getnchannels()
-            sample_width_bits = wav.getsampwidth() * 8
+            sample_width_bytes = wav.getsampwidth()
+            sample_width_bits = sample_width_bytes * 8
             sample_rate_hz = wav.getframerate()
             frame_count = wav.getnframes()
             if channels < 1 or sample_width_bits < 1 or sample_rate_hz < 1 or frame_count < 1:
                 raise GeminiTtsError("Gemini TTS returned empty or invalid WAV audio")
+            frame_data = wav.readframes(frame_count)
+            expected_bytes = frame_count * channels * sample_width_bytes
+            if not frame_data or len(frame_data) != expected_bytes:
+                raise GeminiTtsError("Gemini TTS returned truncated WAV audio")
     except (EOFError, wave.Error) as error:
         raise GeminiTtsError("Gemini TTS returned malformed WAV audio") from error
     return wav_bytes, mime_type, sample_rate_hz, channels, sample_width_bits, frame_count
+
+
+def _publish_without_overwrite(path: Path, wav_bytes: bytes) -> None:
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        remaining = memoryview(wav_bytes)
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written < 1:
+                raise OSError("failed to write temporary WAV file")
+            remaining = remaining[written:]
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = -1
+        os.link(temporary_path, path)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary_path.unlink(missing_ok=True)
 
 
 def synthesize_wav(
@@ -113,12 +144,7 @@ def synthesize_wav(
     wav_bytes, mime_type, rate, channels, width, frames = _decode_wav(
         getattr(interaction, "output_audio", None)
     )
-    try:
-        with path.open("xb") as file:
-            file.write(wav_bytes)
-    except Exception:
-        path.unlink(missing_ok=True)
-        raise
+    _publish_without_overwrite(path, wav_bytes)
     return GeminiTtsResult(
         output_path=path,
         model=model,
