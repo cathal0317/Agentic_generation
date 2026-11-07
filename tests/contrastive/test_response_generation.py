@@ -5,6 +5,8 @@ import pytest
 from pydantic import ValidationError
 
 from agentic_generation.contrastive.response_generation import (
+    RESPONSE_GENERATION_PROMPT_VERSION,
+    SYSTEM_PROMPT,
     ResponseGenerationRequest,
     ResponseGenerationResult,
     generate_response,
@@ -72,6 +74,21 @@ def test_request_and_result_strip_surrounding_whitespace():
         "response_text": "That sounds unwelcome.",
         "response_vocal_direction": "Calm and attentive.",
     }
+
+
+def test_request_allows_omitted_or_none_response_goal():
+    omitted = ResponseGenerationRequest(
+        utterance="They moved the meeting to Friday.",
+        appraisal="wanted",
+    )
+    explicit_none = ResponseGenerationRequest(
+        utterance="They moved the meeting to Friday.",
+        appraisal="wanted",
+        response_goal=None,
+    )
+
+    assert omitted.response_goal is None
+    assert explicit_none.response_goal is None
 
 
 @pytest.mark.parametrize(
@@ -193,6 +210,36 @@ def test_sends_only_allowed_payload_in_one_structured_request(
         "response_goal": "Briefly acknowledge that the change seems unwelcome.",
     }
     assert responses.create_calls == []
+
+
+@pytest.mark.parametrize("goal_argument", [{}, {"response_goal": None}])
+def test_omits_absent_goal_from_provider_payload(generation_result, goal_argument):
+    responses = FakeResponses(SimpleNamespace(status="completed", output_parsed=generation_result))
+    request = ResponseGenerationRequest(
+        utterance="They moved the meeting to Friday.",
+        appraisal="wanted",
+        **goal_argument,
+    )
+
+    generate_response(FakeClient(responses), request, "response-model", 384)
+
+    assert len(responses.parse_calls) == 1
+    assert json.loads(responses.parse_calls[0]["input"][0]["content"]) == {
+        "utterance": "They moved the meeting to Friday.",
+        "appraisal": "wanted",
+    }
+    assert responses.create_calls == []
+
+
+def test_v2_prompt_contains_shared_goal_and_no_goal_rules():
+    assert RESPONSE_GENERATION_PROMPT_VERSION == "response-generation-v2"
+    assert "If a response_goal is provided" in SYSTEM_PROMPT
+    assert "If no response_goal is provided" in SYSTEM_PROMPT
+    assert "Do not invent the cause of the appraisal" in SYSTEM_PROMPT
+    assert "Acknowledgment does not require reassurance, advice, or a positive reframing." in (
+        SYSTEM_PROMPT
+    )
+    assert "prior assistant actions" in SYSTEM_PROMPT
 
 
 @pytest.mark.parametrize("status", ["incomplete", "failed"])
