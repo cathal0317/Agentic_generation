@@ -1,21 +1,7 @@
 """Contracts and deterministic decisions for contrastive candidate review.
 
-The pair model stores one shared utterance, so text invariance is structural
-rather than another semantic criterion. Actual synthesized speech still
-requires later audio review. Vocal contrast here is only a textual plausibility
-assessment and does not establish tone sufficiency.
-
-An appraisal is the speaker's current stance. It does not imply that the
-speaker previously requested the event or identify which aspect caused the
-stance. A negative stance toward a package arriving does not establish dislike
-of the item itself. Asking about an unknown fact is allowed, while a question
-such as "Which schedule does it conflict with?" presupposes a conflict and may
-fail groundedness.
-
-Private context is allowed as reviewer evidence and is not itself a defect.
-Questions and empathy are valid moves, but neither is mandatory for every
-condition. A goal that combines empathy, inquiry, and problem-solving contains
-multiple conversational actions.
+Private context is reviewer-only evidence for response goals; it is not an
+input to response generation.
 """
 
 from typing import Annotated, Literal
@@ -62,16 +48,17 @@ class PairReviewInput(BaseModel):
 
 
 class ResponseReviewConditionInput(BaseModel):
-    """Response information with no private context or vocal direction."""
+    """Response information and reviewer-only context, without vocal direction."""
 
     model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
 
     appraisal: NonEmptyText
+    private_context: NonEmptyText
     response_goals: list[NonEmptyText] = Field(min_length=1)
 
 
 class ResponseReviewInput(BaseModel):
-    """Public text and appraisal-conditioned response directions."""
+    """Shared text, reviewer-only context, and appraisal-conditioned response directions."""
 
     model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
 
@@ -100,12 +87,13 @@ def build_pair_review_input(pair: ContrastivePair) -> PairReviewInput:
 
 
 def build_response_review_input(pair: ContrastivePair) -> ResponseReviewInput:
-    """Explicitly copy only public response-review fields."""
+    """Explicitly copy only fields allowed in response-goal review."""
     return ResponseReviewInput(
         utterance=pair.utterance,
         conditions=[
             ResponseReviewConditionInput(
                 appraisal=condition.appraisal,
+                private_context=condition.private_context,
                 response_goals=list(condition.response_goals),
             )
             for condition in pair.conditions
@@ -178,8 +166,11 @@ class GoalReview(BaseModel):
     goal_index: int = Field(ge=0)
     groundedness: CriterionResult = Field(
         description=(
-            "Whether the goal follows from the utterance and given current appraisal without "
-            "assuming its unknown cause. Open questions are allowed; presuppositions are not."
+            "Whether the goal is supported by or compatible with the utterance, appraisal, or "
+            "that condition's private context. Do not fail a goal only because its supporting "
+            "fact was not observable to the assistant, and do not require use of private context. "
+            "Claims unsupported by these inputs, contradictions, and presupposed unknown facts "
+            "may fail. Open questions are allowed."
         )
     )
     single_action: CriterionResult = Field(
@@ -206,7 +197,7 @@ class ConditionResponseReview(BaseModel):
 
 
 class ResponseReview(BaseModel):
-    """Review of response directions without access to private condition facts."""
+    """Review of response directions with reviewer-only private condition evidence."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
 

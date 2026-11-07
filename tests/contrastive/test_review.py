@@ -11,6 +11,7 @@ from agentic_generation.contrastive.review import (
     GoalReview,
     PairReview,
     ResponseReview,
+    ResponseReviewConditionInput,
     ReviewCorrespondenceError,
     TextReview,
     build_pair_review_input,
@@ -156,17 +157,21 @@ def test_projections_include_only_allowed_fields_and_preserve_order(pair):
         "conditions": [
             {
                 "appraisal": condition.appraisal,
+                "private_context": condition.private_context,
                 "response_goals": condition.response_goals,
             }
             for condition in pair.conditions
         ],
     }
+    assert [condition.appraisal for condition in response_input.conditions] == [
+        condition.appraisal for condition in pair.conditions
+    ]
 
 
-def test_response_projection_excludes_private_and_vocal_markers(pair):
+def test_response_projection_includes_private_and_goal_but_excludes_vocal_markers(pair):
     serialized = json.dumps(build_response_review_input(pair).model_dump())
 
-    assert PRIVATE_MARKER not in serialized
+    assert PRIVATE_MARKER in serialized
     assert VOCAL_MARKER not in serialized
     assert GOAL_MARKER in serialized
 
@@ -178,6 +183,28 @@ def test_pair_projection_excludes_response_goals(pair):
     assert "response_goals" not in serialized
     assert PRIVATE_MARKER in serialized
     assert VOCAL_MARKER in serialized
+
+
+@pytest.mark.parametrize("private_context", ["", " \n\t"])
+def test_response_review_condition_rejects_empty_private_context(private_context):
+    with pytest.raises(ValidationError):
+        ResponseReviewConditionInput(
+            appraisal="wanted",
+            private_context=private_context,
+            response_goals=["Acknowledge the outcome."],
+        )
+
+
+def test_response_review_condition_rejects_extra_fields():
+    with pytest.raises(ValidationError):
+        ResponseReviewConditionInput.model_validate(
+            {
+                "appraisal": "wanted",
+                "private_context": "The new date suits the speaker.",
+                "response_goals": ["Acknowledge the outcome."],
+                "vocal_direction": "Bright and pleased.",
+            }
+        )
 
 
 @pytest.mark.parametrize(
