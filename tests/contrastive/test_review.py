@@ -1,10 +1,12 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
 
 from agentic_generation.contrastive.models import ContrastCondition, ContrastivePair
 from agentic_generation.contrastive.review import (
+    CONTRASTIVE_REVIEW_SYSTEM_PROMPT,
     ConditionResponseReview,
     ContrastiveReview,
     CriterionResult,
@@ -18,12 +20,37 @@ from agentic_generation.contrastive.review import (
     build_response_review_input,
     build_text_review_input,
     determine_review_decision,
+    review_contrastive_pair,
     validate_review_correspondence,
 )
+from agentic_generation.openai_adapter import GenerationError
 
 PRIVATE_MARKER = "PRIVATE_MARKER_K7"
 VOCAL_MARKER = "VOCAL_MARKER_Q4"
 GOAL_MARKER = "GOAL_MARKER_M9"
+
+
+class FakeResponses:
+    def __init__(self, response=None, error=None):
+        self.response = response
+        self.error = error
+        self.parse_calls = []
+        self.create_calls = []
+
+    def parse(self, **kwargs):
+        self.parse_calls.append(kwargs)
+        if self.error is not None:
+            raise self.error
+        return self.response
+
+    def create(self, **kwargs):
+        self.create_calls.append(kwargs)
+        raise AssertionError("unstructured fallback must not run")
+
+
+class FakeClient:
+    def __init__(self, responses):
+        self.responses = responses
 
 
 @pytest.fixture
@@ -95,6 +122,94 @@ def make_review():
             response_consequence=criterion(),
         ),
     )
+
+
+def test_requests_one_structured_review_with_projected_payload(pair):
+    expected_review = make_review()
+    responses = FakeResponses(SimpleNamespace(status="completed", output_parsed=expected_review))
+
+    result = review_contrastive_pair(
+        FakeClient(responses),
+        pair,
+        "review-model",
+        768,
+    )
+
+    assert result == expected_review
+    assert determine_review_decision(pair, result) == "ready_for_audio_review"
+    assert len(responses.parse_calls) == 1
+    call = responses.parse_calls[0]
+    assert call["instructions"] == CONTRASTIVE_REVIEW_SYSTEM_PROMPT
+    assert call["model"] == "review-model"
+    assert call["max_output_tokens"] == 768
+    assert call["text_format"] is ContrastiveReview
+    assert call["store"] is False
+    payload = json.loads(call["input"][0]["content"])
+    assert payload == {
+        "text": build_text_review_input(pair).model_dump(),
+        "pair": build_pair_review_input(pair).model_dump(),
+        "response": build_response_review_input(pair).model_dump(),
+    }
+    assert PRIVATE_MARKER in json.dumps(payload["response"])
+    assert VOCAL_MARKER not in json.dumps(payload["response"])
+    assert responses.create_calls == []
+
+
+@pytest.mark.parametrize("status", ["incomplete", "failed"])
+def test_rejects_non_completed_provider_review_without_retry(pair, status):
+    responses = FakeResponses(SimpleNamespace(status=status, output_parsed=make_review()))
+
+    with pytest.raises(GenerationError, match="No complete"):
+        review_contrastive_pair(FakeClient(responses), pair, "model", 256)
+
+    assert len(responses.parse_calls) == 1
+    assert responses.create_calls == []
+
+
+def test_rejects_missing_parsed_review_without_retry(pair):
+    responses = FakeResponses(SimpleNamespace(status="completed", output_parsed=None))
+
+    with pytest.raises(GenerationError, match="No complete"):
+        review_contrastive_pair(FakeClient(responses), pair, "model", 256)
+
+    assert len(responses.parse_calls) == 1
+    assert responses.create_calls == []
+
+
+def test_converts_provider_validation_error_without_retry(pair):
+    try:
+        ContrastiveReview.model_validate({})
+    except ValidationError as error:
+        parse_error = error
+    responses = FakeResponses(error=parse_error)
+
+    with pytest.raises(GenerationError, match="invalid structured output"):
+        review_contrastive_pair(FakeClient(responses), pair, "model", 256)
+
+    assert len(responses.parse_calls) == 1
+    assert responses.create_calls == []
+
+
+@pytest.mark.parametrize("invalid_index", ["condition", "goal"])
+def test_rejects_invalid_review_correspondence_without_retry(pair, invalid_index):
+    review = make_review()
+    conditions = list(review.response.conditions)
+    if invalid_index == "condition":
+        conditions[0] = conditions[0].model_copy(update={"condition_index": 2})
+    else:
+        goals = list(conditions[0].goals)
+        goals[0] = goals[0].model_copy(update={"goal_index": 2})
+        conditions[0] = conditions[0].model_copy(update={"goals": goals})
+    invalid_review = review.model_copy(
+        update={"response": review.response.model_copy(update={"conditions": conditions})}
+    )
+    responses = FakeResponses(SimpleNamespace(status="completed", output_parsed=invalid_review))
+
+    with pytest.raises(GenerationError, match="indexes"):
+        review_contrastive_pair(FakeClient(responses), pair, "model", 256)
+
+    assert len(responses.parse_calls) == 1
+    assert responses.create_calls == []
 
 
 def with_text_criterion(review, field, verdict):

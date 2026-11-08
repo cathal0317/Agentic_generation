@@ -34,3 +34,4 @@ dist/
 
 # Local generation outputs
 results/
+examples/tts/

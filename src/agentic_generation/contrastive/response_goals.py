@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 from agentic_generation.openai_adapter import GenerationError
 
-RESPONSE_GOALS_PROMPT_VERSION = "response-goals-v2"
+RESPONSE_GOALS_PROMPT_VERSION = "response-goals-v1"
 SYSTEM_PROMPT = """Generate response goals for a conversational assistant.
 
 The supplied appraisal is a data-generation condition. Do not claim that it
