@@ -322,6 +322,18 @@ def test_response_review_condition_rejects_extra_fields():
         )
 
 
+def test_existing_review_criteria_describe_role_and_action_direction_checks():
+    assert "participant roles, action or request direction, and ownership" in (
+        PairReview.model_fields["event_consistency"].description
+    )
+    assert "without changing the speaker's role or appraisal target" in (
+        PairReview.model_fields["natural_contrast"].description
+    )
+    assert "preserve the speaker's role, participant relationships, ownership" in (
+        GoalReview.model_fields["groundedness"].description
+    )
+
+
 @pytest.mark.parametrize(
     "model_data",
     [
@@ -428,6 +440,7 @@ def test_all_pass_is_ready_for_audio_review(pair):
     [
         with_text_criterion(make_review(), "event_clarity", "fail"),
         with_pair_criterion(make_review(), "event_consistency", "fail"),
+        with_pair_criterion(make_review(), "natural_contrast", "fail"),
     ],
 )
 def test_text_or_pair_failure_revises_candidate(pair, review):

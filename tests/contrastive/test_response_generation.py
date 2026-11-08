@@ -201,6 +201,7 @@ def test_sends_only_allowed_payload_in_one_structured_request(
     assert len(responses.parse_calls) == 1
     call = responses.parse_calls[0]
     assert call["model"] == "response-model"
+    assert call["instructions"] == SYSTEM_PROMPT
     assert call["max_output_tokens"] == 384
     assert call["text_format"] is ResponseGenerationResult
     assert call["store"] is False
@@ -224,17 +225,25 @@ def test_omits_absent_goal_from_provider_payload(generation_result, goal_argumen
     generate_response(FakeClient(responses), request, "response-model", 384)
 
     assert len(responses.parse_calls) == 1
-    assert json.loads(responses.parse_calls[0]["input"][0]["content"]) == {
+    call = responses.parse_calls[0]
+    assert call["instructions"] == SYSTEM_PROMPT
+    assert json.loads(call["input"][0]["content"]) == {
         "utterance": "They moved the meeting to Friday.",
         "appraisal": "wanted",
     }
     assert responses.create_calls == []
 
 
-def test_v2_prompt_contains_shared_goal_and_no_goal_rules():
-    assert RESPONSE_GENERATION_PROMPT_VERSION == "response-generation-v2"
+def test_v3_prompt_contains_shared_goal_and_role_preservation_rules():
+    assert RESPONSE_GENERATION_PROMPT_VERSION == "response-generation-v3"
     assert "If a response_goal is provided" in SYSTEM_PROMPT
     assert "If no response_goal is provided" in SYSTEM_PROMPT
+    assert "Preserve the speaker's role, the other participants' roles" in SYSTEM_PROMPT
+    assert "Do not turn a request made by the speaker into a report" in SYSTEM_PROMPT
+    assert "A response_goal is also not authority for changing participant roles." in (
+        SYSTEM_PROMPT
+    )
+    assert "If the roles or appraisal target remain unclear" in SYSTEM_PROMPT
     assert "Do not invent the cause of the appraisal" in SYSTEM_PROMPT
     assert "Acknowledgment does not require reassurance, advice, or a positive reframing." in (
         SYSTEM_PROMPT
