@@ -9,7 +9,7 @@ import tempfile
 from datetime import UTC, datetime
 from math import ceil
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 from openai import OpenAI
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -38,6 +38,11 @@ from agentic_generation.contrastive.response_generation import (
 NonEmptyText = Annotated[str, Field(min_length=1)]
 DEFAULT_OUTPUT_DIR = Path("results/contrastive")
 RESPONSE_GOAL_POLICY = "first_candidate_goal_v1"
+ALL_RESPONSE_GOALS_POLICY = "all_candidate_goals_v1"
+GOAL_MODE_POLICIES = {
+    "first": RESPONSE_GOAL_POLICY,
+    "all": ALL_RESPONSE_GOALS_POLICY,
+}
 
 
 class DatasetResponse(BaseModel):
@@ -66,12 +71,40 @@ class DatasetCondition(BaseModel):
         return self
 
 
+class DatasetResponseCandidate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
+
+    goal_index: int = Field(ge=0)
+    response_goal: NonEmptyText
+    response: DatasetResponse
+
+
+class AllGoalsDatasetCondition(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
+
+    private_context: NonEmptyText
+    vocal_direction: NonEmptyText
+    response_goals: list[NonEmptyText] = Field(min_length=1)
+    response_candidates: list[DatasetResponseCandidate] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def candidates_match_source_goals(self):
+        expected_indexes = list(range(len(self.response_goals)))
+        actual_indexes = [candidate.goal_index for candidate in self.response_candidates]
+        if actual_indexes != expected_indexes:
+            raise ValueError("response_candidates must cover each goal index once in order")
+        for candidate in self.response_candidates:
+            if candidate.response_goal != self.response_goals[candidate.goal_index]:
+                raise ValueError("response candidate goal must match response_goals")
+        return self
+
+
 class DatasetPair(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
 
     pair_id: NonEmptyText
     utterance: NonEmptyText
-    conditions: dict[NonEmptyText, DatasetCondition]
+    conditions: dict[NonEmptyText, DatasetCondition | AllGoalsDatasetCondition]
 
 
 class AxisDataset(BaseModel):
@@ -89,6 +122,7 @@ class AxisDataset(BaseModel):
     response_prompt_version: NonEmptyText
     response_prompt_hash: NonEmptyText
     response_goal_policy: NonEmptyText
+    response_candidate_status: Literal["unreviewed"] | None = None
     created_at: NonEmptyText
     updated_at: NonEmptyText
     candidate_calls: int = Field(ge=0)
@@ -106,6 +140,24 @@ class AxisDataset(BaseModel):
         expected = set(self.appraisals)
         if any(set(pair.conditions) != expected for pair in self.pairs):
             raise ValueError("every pair must contain both appraisal conditions")
+        expected_condition_type = (
+            DatasetCondition
+            if self.response_goal_policy == RESPONSE_GOAL_POLICY
+            else AllGoalsDatasetCondition
+        )
+        if self.response_goal_policy not in GOAL_MODE_POLICIES.values():
+            raise ValueError("unsupported response_goal_policy")
+        if any(
+            not isinstance(condition, expected_condition_type)
+            for pair in self.pairs
+            for condition in pair.conditions.values()
+        ):
+            raise ValueError("condition structure must match response_goal_policy")
+        if self.response_goal_policy == ALL_RESPONSE_GOALS_POLICY:
+            if self.response_candidate_status != "unreviewed":
+                raise ValueError("all-goals datasets must be marked unreviewed")
+        elif self.response_candidate_status is not None:
+            raise ValueError("first-goal datasets cannot set response_candidate_status")
         return self
 
 
@@ -129,9 +181,11 @@ def _new_dataset(
     contrast_id: str,
     target_count: int,
     model: str,
+    goal_mode: Literal["first", "all"] = "first",
 ) -> AxisDataset:
     contrast = CATALOG[contrast_id]
     timestamp = _now()
+    response_goal_policy = GOAL_MODE_POLICIES[goal_mode]
     return AxisDataset(
         status="in_progress",
         contrast_id=contrast_id,
@@ -144,7 +198,10 @@ def _new_dataset(
         candidate_prompt_hash=_prompt_hash(CANDIDATE_SYSTEM_PROMPT),
         response_prompt_version=RESPONSE_GENERATION_PROMPT_VERSION,
         response_prompt_hash=_prompt_hash(RESPONSE_SYSTEM_PROMPT),
-        response_goal_policy=RESPONSE_GOAL_POLICY,
+        response_goal_policy=response_goal_policy,
+        response_candidate_status=(
+            "unreviewed" if response_goal_policy == ALL_RESPONSE_GOALS_POLICY else None
+        ),
         created_at=timestamp,
         updated_at=timestamp,
         candidate_calls=0,
@@ -158,16 +215,18 @@ def _load_or_create_dataset(
     contrast_id: str,
     target_count: int,
     model: str,
+    goal_mode: Literal["first", "all"] = "first",
 ) -> AxisDataset:
     if not path.exists():
-        return _new_dataset(contrast_id, target_count, model)
+        return _new_dataset(contrast_id, target_count, model, goal_mode)
     stored_data = json.loads(path.read_text(encoding="utf-8"))
-    if stored_data.get("response_goal_policy") != RESPONSE_GOAL_POLICY:
+    expected_policy = GOAL_MODE_POLICIES[goal_mode]
+    if stored_data.get("response_goal_policy") != expected_policy:
         raise ValueError(
             "existing dataset has no compatible response_goal_policy; use a new output directory"
         )
     dataset = AxisDataset.model_validate(stored_data)
-    expected = _new_dataset(contrast_id, target_count, model)
+    expected = _new_dataset(contrast_id, target_count, model, goal_mode)
     immutable_fields = (
         "contrast_id",
         "appraisals",
@@ -196,7 +255,7 @@ def _write_dataset(path: Path, dataset: AxisDataset) -> None:
     temporary_path = Path(temporary_name)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as file:
-            json.dump(dataset.model_dump(), file, indent=2, ensure_ascii=False)
+            json.dump(dataset.model_dump(exclude_none=True), file, indent=2, ensure_ascii=False)
             file.write("\n")
             file.flush()
             os.fsync(file.fileno())
@@ -205,33 +264,87 @@ def _write_dataset(path: Path, dataset: AxisDataset) -> None:
         temporary_path.unlink(missing_ok=True)
 
 
-def _realize_pair(client, pair, model: str, max_output_tokens: int, pair_id: str):
+def _generate_dataset_response(
+    client,
+    *,
+    utterance: str,
+    appraisal: str,
+    response_goal: str,
+    model: str,
+    max_output_tokens: int,
+) -> DatasetResponse:
+    response = generate_response(
+        client,
+        ResponseGenerationRequest(
+            utterance=utterance,
+            appraisal=appraisal,
+            response_goal=response_goal,
+        ),
+        model,
+        max_output_tokens,
+    )
+    return DatasetResponse(
+        text=response.response_text,
+        vocal_direction=response.response_vocal_direction,
+    )
+
+
+def _realize_pair(
+    client,
+    pair,
+    model: str,
+    max_output_tokens: int,
+    pair_id: str,
+    goal_mode: Literal["first", "all"] = "first",
+):
     conditions = {}
     response_calls = 0
     for condition in pair.conditions:
-        selected_goal_index = 0
-        selected_response_goal = condition.response_goals[selected_goal_index]
-        response = generate_response(
-            client,
-            ResponseGenerationRequest(
+        if goal_mode == "first":
+            selected_goal_index = 0
+            selected_response_goal = condition.response_goals[selected_goal_index]
+            response = _generate_dataset_response(
+                client,
                 utterance=pair.utterance,
                 appraisal=condition.appraisal,
                 response_goal=selected_response_goal,
-            ),
-            model,
-            max_output_tokens,
-        )
-        response_calls += 1
-        conditions[condition.appraisal] = DatasetCondition(
+                model=model,
+                max_output_tokens=max_output_tokens,
+            )
+            response_calls += 1
+            conditions[condition.appraisal] = DatasetCondition(
+                private_context=condition.private_context,
+                vocal_direction=condition.vocal_direction,
+                response_goals=list(condition.response_goals),
+                selected_goal_index=selected_goal_index,
+                selected_response_goal=selected_response_goal,
+                response=response,
+            )
+            continue
+
+        response_candidates = []
+        for goal_index, response_goal in enumerate(condition.response_goals):
+            response = _generate_dataset_response(
+                client,
+                utterance=pair.utterance,
+                appraisal=condition.appraisal,
+                response_goal=response_goal,
+                model=model,
+                max_output_tokens=max_output_tokens,
+            )
+            response_calls += 1
+            response_candidates.append(
+                DatasetResponseCandidate(
+                    goal_index=goal_index,
+                    response_goal=response_goal,
+                    response=response,
+                )
+            )
+        conditions[condition.appraisal] = AllGoalsDatasetCondition(
             private_context=condition.private_context,
             vocal_direction=condition.vocal_direction,
             response_goals=list(condition.response_goals),
-            selected_goal_index=selected_goal_index,
-            selected_response_goal=selected_response_goal,
-            response=DatasetResponse(
-                text=response.response_text,
-                vocal_direction=response.response_vocal_direction,
-            ),
+            response_candidates=response_candidates,
         )
     return (
         DatasetPair(
@@ -253,10 +366,11 @@ def generate_axis(
     output_dir: Path,
     model: str,
     max_output_tokens: int,
+    goal_mode: Literal["first", "all"] = "first",
 ) -> AxisDataset:
     """Generate one axis, checkpointing each fully realized pair."""
     path = _dataset_path(output_dir, contrast_id)
-    dataset = _load_or_create_dataset(path, contrast_id, target_count, model)
+    dataset = _load_or_create_dataset(path, contrast_id, target_count, model, goal_mode)
     if dataset.completed_pair_count >= target_count:
         return dataset
 
@@ -292,6 +406,7 @@ def generate_axis(
                 model,
                 max_output_tokens,
                 pair_id,
+                goal_mode,
             )
             dataset.pairs.append(realized)
             seen_utterances.add(normalized)
@@ -310,18 +425,29 @@ def build_dry_run(
     target_count: int,
     batch_size: int,
     output_dir: Path,
+    goal_mode: Literal["first", "all"] = "first",
 ) -> dict[str, object]:
-    return {
+    result = {
         "status": "dry_run",
+        "goal_mode": goal_mode,
+        "response_goal_policy": GOAL_MODE_POLICIES[goal_mode],
         "contrast_ids": contrast_ids,
         "target_pairs_per_axis": target_count,
         "total_target_pairs": target_count * len(contrast_ids),
         "minimum_candidate_calls": ceil(target_count / batch_size) * len(contrast_ids),
-        "response_calls": target_count * 2 * len(contrast_ids),
         "output_files": [
             str(_dataset_path(output_dir, contrast_id)) for contrast_id in contrast_ids
         ],
     }
+    if goal_mode == "first":
+        result["response_calls"] = target_count * 2 * len(contrast_ids)
+    else:
+        result["response_calls"] = None
+        result["response_calls_formula"] = (
+            "sum(len(condition.response_goals) for every generated condition)"
+        )
+        result["response_candidate_status"] = "unreviewed"
+    return result
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -338,6 +464,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=int, choices=range(1, 7), default=6)
     parser.add_argument("--max-batches-per-axis", type=int, default=30)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--goal-mode", choices=("first", "all"), default="first")
     parser.add_argument("--dry-run", action="store_true")
     return parser
 
@@ -356,6 +483,7 @@ def main(argv: list[str] | None = None) -> int:
                     args.count_per_axis,
                     args.batch_size,
                     args.output_dir,
+                    args.goal_mode,
                 ),
                 indent=2,
                 ensure_ascii=False,
@@ -385,6 +513,7 @@ def main(argv: list[str] | None = None) -> int:
                 output_dir=args.output_dir,
                 model=settings.user_model,
                 max_output_tokens=settings.max_output_tokens,
+                goal_mode=args.goal_mode,
             )
             print(
                 f"{contrast_id}: {dataset.completed_pair_count}/{dataset.target_pair_count} pairs"
