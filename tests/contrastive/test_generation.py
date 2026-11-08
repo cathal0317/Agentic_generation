@@ -1,11 +1,15 @@
+import hashlib
 import json
 from types import SimpleNamespace
 
 import pytest
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
+import agentic_generation.contrastive.cli as contrastive_cli
 from agentic_generation.contrastive.catalog import CATALOG, CATALOG_VERSION
 from agentic_generation.contrastive.generation import (
+    PROMPT_VERSION,
+    SYSTEM_PROMPT,
     ContrastGenerationRequest,
     ContrastiveBatch,
     generate_contrastive_pairs,
@@ -46,6 +50,10 @@ class FakeResponses:
 class FakeClient:
     def __init__(self, responses):
         self.responses = responses
+        self.closed = False
+
+    def close(self):
+        self.closed = True
 
 
 def make_pair(
@@ -136,6 +144,7 @@ def test_sends_only_selected_contrast_and_count_in_one_structured_request():
     assert len(responses.parse_calls) == 1
     call = responses.parse_calls[0]
     assert call["model"] == "user-model"
+    assert call["instructions"] == SYSTEM_PROMPT
     assert call["max_output_tokens"] == 768
     assert call["text_format"] is ContrastiveBatch
     assert call["store"] is False
@@ -145,6 +154,38 @@ def test_sends_only_selected_contrast_and_count_in_one_structured_request():
         "candidate_count": 1,
     }
     assert responses.create_calls == []
+
+
+def test_v3_prompt_emphasizes_natural_shared_utterances_and_situation_diversity():
+    assert PROMPT_VERSION == "contrastive-generation-v3"
+    assert "DESIGN THE SITUATION BEFORE WRITING THE UTTERANCE" in SYSTEM_PROMPT
+    assert "WRITE A NATURAL SHARED UTTERANCE" in SYSTEM_PROMPT
+    assert "BUILD A MEANINGFULLY VARIED BATCH" in SYSTEM_PROMPT
+    assert "Preserve what the speaker is doing conversationally." in SYSTEM_PROMPT
+    assert "Replacing an object, name, location, label, or decoration" in SYSTEM_PROMPT
+
+
+def test_cli_records_current_prompt_version_and_actual_prompt_hash(
+    monkeypatch,
+    capsys,
+):
+    batch = ContrastiveBatch(pairs=[make_pair()])
+    client = FakeClient(FakeResponses(completed_response(batch)))
+    settings = SimpleNamespace(
+        api_key=SecretStr("test-key"),
+        user_model="user-model",
+        max_output_tokens=768,
+    )
+    monkeypatch.setattr(contrastive_cli, "GenerationSettings", lambda: settings)
+    monkeypatch.setattr(contrastive_cli, "OpenAI", lambda **_kwargs: client)
+
+    assert contrastive_cli.generate_contrastive("opportunity_vs_burden", 1) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["prompt_version"] == PROMPT_VERSION
+    assert output["prompt_hash"] == hashlib.sha256(SYSTEM_PROMPT.encode("utf-8")).hexdigest()
+    assert client.responses.parse_calls[0]["instructions"] == SYSTEM_PROMPT
+    assert client.closed
 
 
 @pytest.mark.parametrize("status", ["incomplete", "failed"])
