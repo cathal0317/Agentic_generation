@@ -34,6 +34,14 @@ from agentic_generation.contrastive.response_generation import (
 from agentic_generation.contrastive.response_generation import (
     SYSTEM_PROMPT as RESPONSE_SYSTEM_PROMPT,
 )
+from agentic_generation.contrastive.response_goals import (
+    RESPONSE_GOALS_PROMPT_VERSION,
+    ResponseGoalsRequest,
+    generate_response_goals,
+)
+from agentic_generation.contrastive.response_goals import (
+    SYSTEM_PROMPT as RESPONSE_GOALS_SYSTEM_PROMPT,
+)
 
 NonEmptyText = Annotated[str, Field(min_length=1)]
 DEFAULT_OUTPUT_DIR = Path("results/contrastive")
@@ -119,6 +127,8 @@ class AxisDataset(BaseModel):
     catalog_version: NonEmptyText
     candidate_prompt_version: NonEmptyText
     candidate_prompt_hash: NonEmptyText
+    response_goals_prompt_version: NonEmptyText
+    response_goals_prompt_hash: NonEmptyText
     response_prompt_version: NonEmptyText
     response_prompt_hash: NonEmptyText
     response_goal_policy: NonEmptyText
@@ -126,6 +136,7 @@ class AxisDataset(BaseModel):
     created_at: NonEmptyText
     updated_at: NonEmptyText
     candidate_calls: int = Field(ge=0)
+    response_goal_calls: int = Field(ge=0)
     response_calls: int = Field(ge=0)
     pairs: list[DatasetPair]
 
@@ -196,6 +207,8 @@ def _new_dataset(
         catalog_version=CATALOG_VERSION,
         candidate_prompt_version=CANDIDATE_PROMPT_VERSION,
         candidate_prompt_hash=_prompt_hash(CANDIDATE_SYSTEM_PROMPT),
+        response_goals_prompt_version=RESPONSE_GOALS_PROMPT_VERSION,
+        response_goals_prompt_hash=_prompt_hash(RESPONSE_GOALS_SYSTEM_PROMPT),
         response_prompt_version=RESPONSE_GENERATION_PROMPT_VERSION,
         response_prompt_hash=_prompt_hash(RESPONSE_SYSTEM_PROMPT),
         response_goal_policy=response_goal_policy,
@@ -205,6 +218,7 @@ def _new_dataset(
         created_at=timestamp,
         updated_at=timestamp,
         candidate_calls=0,
+        response_goal_calls=0,
         response_calls=0,
         pairs=[],
     )
@@ -235,6 +249,8 @@ def _load_or_create_dataset(
         "catalog_version",
         "candidate_prompt_version",
         "candidate_prompt_hash",
+        "response_goals_prompt_version",
+        "response_goals_prompt_hash",
         "response_prompt_version",
         "response_prompt_hash",
         "response_goal_policy",
@@ -289,6 +305,26 @@ def _generate_dataset_response(
     )
 
 
+def _generate_public_response_goals(
+    client,
+    *,
+    utterance: str,
+    appraisal: str,
+    model: str,
+    max_output_tokens: int,
+) -> list[str]:
+    result = generate_response_goals(
+        client,
+        ResponseGoalsRequest(
+            utterance=utterance,
+            appraisal=appraisal,
+        ),
+        model,
+        max_output_tokens,
+    )
+    return list(result.response_goals)
+
+
 def _realize_pair(
     client,
     pair,
@@ -298,11 +334,20 @@ def _realize_pair(
     goal_mode: Literal["first", "all"] = "first",
 ):
     conditions = {}
+    response_goal_calls = 0
     response_calls = 0
     for condition in pair.conditions:
+        response_goals = _generate_public_response_goals(
+            client,
+            utterance=pair.utterance,
+            appraisal=condition.appraisal,
+            model=model,
+            max_output_tokens=max_output_tokens,
+        )
+        response_goal_calls += 1
         if goal_mode == "first":
             selected_goal_index = 0
-            selected_response_goal = condition.response_goals[selected_goal_index]
+            selected_response_goal = response_goals[selected_goal_index]
             response = _generate_dataset_response(
                 client,
                 utterance=pair.utterance,
@@ -315,7 +360,7 @@ def _realize_pair(
             conditions[condition.appraisal] = DatasetCondition(
                 private_context=condition.private_context,
                 vocal_direction=condition.vocal_direction,
-                response_goals=list(condition.response_goals),
+                response_goals=response_goals,
                 selected_goal_index=selected_goal_index,
                 selected_response_goal=selected_response_goal,
                 response=response,
@@ -323,7 +368,7 @@ def _realize_pair(
             continue
 
         response_candidates = []
-        for goal_index, response_goal in enumerate(condition.response_goals):
+        for goal_index, response_goal in enumerate(response_goals):
             response = _generate_dataset_response(
                 client,
                 utterance=pair.utterance,
@@ -343,7 +388,7 @@ def _realize_pair(
         conditions[condition.appraisal] = AllGoalsDatasetCondition(
             private_context=condition.private_context,
             vocal_direction=condition.vocal_direction,
-            response_goals=list(condition.response_goals),
+            response_goals=response_goals,
             response_candidates=response_candidates,
         )
     return (
@@ -352,6 +397,7 @@ def _realize_pair(
             utterance=pair.utterance,
             conditions=conditions,
         ),
+        response_goal_calls,
         response_calls,
     )
 
@@ -400,7 +446,7 @@ def generate_axis(
             if normalized in seen_utterances:
                 continue
             pair_id = f"{contrast_id}__{dataset.completed_pair_count + 1:03d}"
-            realized, response_calls = _realize_pair(
+            realized, response_goal_calls, response_calls = _realize_pair(
                 client,
                 candidate,
                 model,
@@ -411,6 +457,7 @@ def generate_axis(
             dataset.pairs.append(realized)
             seen_utterances.add(normalized)
             dataset.completed_pair_count = len(dataset.pairs)
+            dataset.response_goal_calls += response_goal_calls
             dataset.response_calls += response_calls
             dataset.updated_at = _now()
             if dataset.completed_pair_count == target_count:
@@ -435,6 +482,7 @@ def build_dry_run(
         "target_pairs_per_axis": target_count,
         "total_target_pairs": target_count * len(contrast_ids),
         "minimum_candidate_calls": ceil(target_count / batch_size) * len(contrast_ids),
+        "response_goal_calls": target_count * 2 * len(contrast_ids),
         "output_files": [
             str(_dataset_path(output_dir, contrast_id)) for contrast_id in contrast_ids
         ],
@@ -442,10 +490,7 @@ def build_dry_run(
     if goal_mode == "first":
         result["response_calls"] = target_count * 2 * len(contrast_ids)
     else:
-        result["response_calls"] = None
-        result["response_calls_formula"] = (
-            "sum(len(condition.response_goals) for every generated condition)"
-        )
+        result["response_calls"] = target_count * 4 * len(contrast_ids)
         result["response_candidate_status"] = "unreviewed"
     return result
 

@@ -9,12 +9,24 @@ from agentic_generation.contrastive.catalog import CATALOG
 from agentic_generation.contrastive.generation import ContrastiveBatch
 from agentic_generation.contrastive.models import ContrastCondition, ContrastivePair
 from agentic_generation.contrastive.response_generation import ResponseGenerationResult
+from agentic_generation.contrastive.response_goals import ResponseGoalsResult
 
 SCRIPT_PATH = Path(__file__).parents[2] / "scripts" / "generate_contrastive_dataset.py"
 SCRIPT_SPEC = spec_from_file_location("generate_contrastive_dataset", SCRIPT_PATH)
 assert SCRIPT_SPEC is not None and SCRIPT_SPEC.loader is not None
 script = module_from_spec(SCRIPT_SPEC)
 SCRIPT_SPEC.loader.exec_module(script)
+
+PUBLIC_GOALS = {
+    "wanted": [
+        "Acknowledge that the event matches the speaker's current preference.",
+        "Invite the speaker to say what they welcome about the event.",
+    ],
+    "unwanted": [
+        "Acknowledge that the event conflicts with the speaker's current preference.",
+        "Invite the speaker to say what concerns them about the event.",
+    ],
+}
 
 
 def make_pair(
@@ -57,6 +69,19 @@ def make_pair(
     )
 
 
+def install_fake_goal_generation(monkeypatch, calls=None):
+    def fake_generate_response_goals(_client, request, _model, _max_output_tokens):
+        if calls is not None:
+            calls.append(request)
+        return ResponseGoalsResult(response_goals=PUBLIC_GOALS[request.appraisal])
+
+    monkeypatch.setattr(
+        script,
+        "generate_response_goals",
+        fake_generate_response_goals,
+    )
+
+
 def test_first_dry_run_describes_all_axis_files_and_calls(
     tmp_path,
     capsys,
@@ -90,6 +115,7 @@ def test_first_dry_run_describes_all_axis_files_and_calls(
     assert output["response_goal_policy"] == script.RESPONSE_GOAL_POLICY
     assert output["total_target_pairs"] == 400
     assert output["minimum_candidate_calls"] == 72
+    assert output["response_goal_calls"] == 800
     assert output["response_calls"] == 800
     assert len(output["output_files"]) == len(CATALOG)
     assert str(tmp_path / "wanted_vs_unwanted" / "dataset.json") in output["output_files"]
@@ -131,10 +157,8 @@ def test_all_dry_run_reports_dynamic_response_count_without_client(
     output = json.loads(capsys.readouterr().out)
     assert output["goal_mode"] == "all"
     assert output["response_goal_policy"] == script.ALL_RESPONSE_GOALS_POLICY
-    assert output["response_calls"] is None
-    assert output["response_calls_formula"] == (
-        "sum(len(condition.response_goals) for every generated condition)"
-    )
+    assert output["response_goal_calls"] == 4
+    assert output["response_calls"] == 8
     assert output["response_candidate_status"] == "unreviewed"
 
 
@@ -225,6 +249,7 @@ def test_generate_axis_passes_and_stores_first_goal_by_appraisal(
     reverse_conditions,
 ):
     generation_calls = []
+    goal_calls = []
     response_calls = []
     candidate = make_pair(reverse_conditions=reverse_conditions)
     original_candidate = candidate.model_dump()
@@ -241,6 +266,7 @@ def test_generate_axis_passes_and_stores_first_goal_by_appraisal(
         )
 
     monkeypatch.setattr(script, "generate_contrastive_pairs", fake_generate_pairs)
+    install_fake_goal_generation(monkeypatch, goal_calls)
     monkeypatch.setattr(script, "generate_response", fake_generate_response)
     client = SimpleNamespace()
 
@@ -257,19 +283,32 @@ def test_generate_axis_passes_and_stores_first_goal_by_appraisal(
 
     assert dataset.status == "completed"
     assert dataset.response_goal_policy == script.RESPONSE_GOAL_POLICY
+    assert dataset.response_goal_calls == 2
     assert len(generation_calls) == 1
+    assert len(goal_calls) == 2
     assert len(response_calls) == 2
+    assert {request.appraisal for request in goal_calls} == {"wanted", "unwanted"}
+    assert all(
+        request.model_dump()
+        == {
+            "utterance": "They scheduled the visit for Friday.",
+            "appraisal": request.appraisal,
+        }
+        for request in goal_calls
+    )
+    assert "preferred day" not in repr(goal_calls)
+    assert "conflicts with the speaker's plans" not in repr(goal_calls)
     requests_by_appraisal = {request.appraisal: request for request in response_calls}
     assert set(requests_by_appraisal) == {"wanted", "unwanted"}
     assert requests_by_appraisal["wanted"].model_dump(exclude_none=True) == {
         "utterance": "They scheduled the visit for Friday.",
         "appraisal": "wanted",
-        "response_goal": "Acknowledge the welcome outcome.",
+        "response_goal": PUBLIC_GOALS["wanted"][0],
     }
     assert requests_by_appraisal["unwanted"].model_dump(exclude_none=True) == {
         "utterance": "They scheduled the visit for Friday.",
         "appraisal": "unwanted",
-        "response_goal": "Acknowledge the unwelcome outcome.",
+        "response_goal": PUBLIC_GOALS["unwanted"][0],
     }
     assert candidate.model_dump() == original_candidate
 
@@ -283,10 +322,7 @@ def test_generate_axis_passes_and_stores_first_goal_by_appraisal(
     wanted = pair["conditions"]["wanted"]
     assert wanted["private_context"]
     assert wanted["vocal_direction"]
-    assert wanted["response_goals"] == [
-        "Acknowledge the welcome outcome.",
-        "Show interest.",
-    ]
+    assert wanted["response_goals"] == PUBLIC_GOALS["wanted"]
     assert wanted["selected_goal_index"] == 0
     assert wanted["selected_response_goal"] == wanted["response_goals"][0]
     assert wanted["selected_response_goal"] == requests_by_appraisal["wanted"].response_goal
@@ -295,10 +331,7 @@ def test_generate_axis_passes_and_stores_first_goal_by_appraisal(
         "vocal_direction": "Respond in a wanted manner.",
     }
     unwanted = pair["conditions"]["unwanted"]
-    assert unwanted["response_goals"] == [
-        "Acknowledge the unwelcome outcome.",
-        "Invite clarification.",
-    ]
+    assert unwanted["response_goals"] == PUBLIC_GOALS["unwanted"]
     assert unwanted["selected_goal_index"] == 0
     assert unwanted["selected_response_goal"] == unwanted["response_goals"][0]
     assert unwanted["selected_response_goal"] == requests_by_appraisal["unwanted"].response_goal
@@ -315,12 +348,13 @@ def test_generate_axis_passes_and_stores_first_goal_by_appraisal(
     )
     assert resumed.completed_pair_count == 1
     assert len(generation_calls) == 1
+    assert len(goal_calls) == 2
     assert len(response_calls) == 2
 
 
 @pytest.mark.parametrize(
-    ("wanted_goal_count", "unwanted_goal_count", "reverse_conditions", "expected_calls"),
-    [(3, 3, False, 6), (2, 3, False, 5), (3, 3, True, 6)],
+    ("wanted_goal_count", "unwanted_goal_count", "reverse_conditions"),
+    [(3, 3, False), (2, 3, False), (3, 3, True)],
 )
 def test_all_mode_generates_and_stores_each_goal_by_appraisal(
     tmp_path,
@@ -328,8 +362,8 @@ def test_all_mode_generates_and_stores_each_goal_by_appraisal(
     wanted_goal_count,
     unwanted_goal_count,
     reverse_conditions,
-    expected_calls,
 ):
+    goal_calls = []
     response_calls = []
     candidate = make_pair(
         reverse_conditions=reverse_conditions,
@@ -343,6 +377,7 @@ def test_all_mode_generates_and_stores_each_goal_by_appraisal(
         "generate_contrastive_pairs",
         lambda *_args, **_kwargs: ContrastiveBatch(pairs=[candidate]),
     )
+    install_fake_goal_generation(monkeypatch, goal_calls)
 
     def fake_generate_response(_client, request, _model, _max_output_tokens):
         response_calls.append(request)
@@ -367,7 +402,9 @@ def test_all_mode_generates_and_stores_each_goal_by_appraisal(
 
     assert dataset.response_goal_policy == script.ALL_RESPONSE_GOALS_POLICY
     assert dataset.response_candidate_status == "unreviewed"
-    assert len(response_calls) == expected_calls
+    assert dataset.response_goal_calls == 2
+    assert len(goal_calls) == 2
+    assert len(response_calls) == 4
     assert candidate.model_dump() == original_candidate
 
     output = json.loads(
@@ -406,7 +443,8 @@ def test_all_mode_generates_and_stores_each_goal_by_appraisal(
         goal_mode="all",
     )
     assert resumed.completed_pair_count == 1
-    assert len(response_calls) == expected_calls
+    assert len(goal_calls) == 2
+    assert len(response_calls) == 4
 
 
 @pytest.mark.parametrize(
@@ -464,6 +502,7 @@ def test_response_failure_does_not_checkpoint_partial_pair(tmp_path, monkeypatch
         "generate_contrastive_pairs",
         lambda *_args, **_kwargs: ContrastiveBatch(pairs=[candidate]),
     )
+    install_fake_goal_generation(monkeypatch)
 
     def fail_second_response(_client, request, _model, _max_output_tokens):
         response_calls.append(request)
@@ -493,6 +532,7 @@ def test_response_failure_does_not_checkpoint_partial_pair(tmp_path, monkeypatch
     stored = json.loads(path.read_text(encoding="utf-8"))
     assert stored["completed_pair_count"] == 0
     assert stored["candidate_calls"] == 0
+    assert stored["response_goal_calls"] == 0
     assert stored["response_calls"] == 0
     assert stored["pairs"] == []
 
@@ -516,6 +556,7 @@ def test_all_mode_failure_preserves_completed_pair_only(tmp_path, monkeypatch):
         "generate_contrastive_pairs",
         lambda *_args, **_kwargs: ContrastiveBatch(pairs=[first_candidate, second_candidate]),
     )
+    install_fake_goal_generation(monkeypatch)
 
     def fail_during_second_pair(_client, request, _model, _max_output_tokens):
         response_calls.append(request)
@@ -549,6 +590,7 @@ def test_all_mode_failure_preserves_completed_pair_only(tmp_path, monkeypatch):
     )
     assert stored["completed_pair_count"] == 1
     assert stored["candidate_calls"] == 1
-    assert stored["response_calls"] == 5
+    assert stored["response_goal_calls"] == 2
+    assert stored["response_calls"] == 4
     assert len(stored["pairs"]) == 1
     assert stored["pairs"][0]["utterance"] == first_candidate.utterance
