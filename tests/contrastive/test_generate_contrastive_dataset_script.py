@@ -29,6 +29,15 @@ PUBLIC_GOALS = {
 }
 
 
+@pytest.fixture(autouse=True)
+def pass_candidate_event_review(monkeypatch):
+    monkeypatch.setattr(
+        script,
+        "_has_consistent_shared_event",
+        lambda *_args, **_kwargs: True,
+    )
+
+
 def make_pair(
     *,
     reverse_conditions=False,
@@ -115,6 +124,7 @@ def test_first_dry_run_describes_all_axis_files_and_calls(
     assert output["response_goal_policy"] == script.RESPONSE_GOAL_POLICY
     assert output["total_target_pairs"] == 400
     assert output["minimum_candidate_calls"] == 72
+    assert output["minimum_candidate_review_calls"] == 400
     assert output["response_goal_calls"] == 800
     assert output["response_calls"] == 800
     assert len(output["output_files"]) == len(CATALOG)
@@ -157,6 +167,7 @@ def test_all_dry_run_reports_dynamic_response_count_without_client(
     output = json.loads(capsys.readouterr().out)
     assert output["goal_mode"] == "all"
     assert output["response_goal_policy"] == script.ALL_RESPONSE_GOALS_POLICY
+    assert output["minimum_candidate_review_calls"] == 2
     assert output["response_goal_calls"] == 4
     assert output["response_calls"] == 8
     assert output["response_candidate_status"] == "unreviewed"
@@ -283,6 +294,7 @@ def test_generate_axis_passes_and_stores_first_goal_by_appraisal(
 
     assert dataset.status == "completed"
     assert dataset.response_goal_policy == script.RESPONSE_GOAL_POLICY
+    assert dataset.candidate_review_calls == 1
     assert dataset.response_goal_calls == 2
     assert len(generation_calls) == 1
     assert len(goal_calls) == 2
@@ -402,6 +414,7 @@ def test_all_mode_generates_and_stores_each_goal_by_appraisal(
 
     assert dataset.response_goal_policy == script.ALL_RESPONSE_GOALS_POLICY
     assert dataset.response_candidate_status == "unreviewed"
+    assert dataset.candidate_review_calls == 1
     assert dataset.response_goal_calls == 2
     assert len(goal_calls) == 2
     assert len(response_calls) == 4
@@ -487,6 +500,60 @@ def test_resume_rejects_missing_or_different_goal_policy(
         )
 
 
+def test_inconsistent_event_candidate_is_skipped_before_goal_generation(
+    tmp_path,
+    monkeypatch,
+):
+    rejected = make_pair(utterance="They changed the hidden event.")
+    accepted = make_pair(utterance="They scheduled the visit for Friday.")
+    candidates = iter([rejected, accepted])
+    reviewed_utterances = []
+    goal_calls = []
+    response_calls = []
+
+    monkeypatch.setattr(
+        script,
+        "generate_contrastive_pairs",
+        lambda *_args, **_kwargs: ContrastiveBatch(pairs=[next(candidates)]),
+    )
+
+    def fake_event_review(_client, *, pair, **_kwargs):
+        reviewed_utterances.append(pair.utterance)
+        return pair is accepted
+
+    monkeypatch.setattr(script, "_has_consistent_shared_event", fake_event_review)
+    install_fake_goal_generation(monkeypatch, goal_calls)
+
+    def fake_generate_response(_client, request, _model, _max_output_tokens):
+        response_calls.append(request)
+        return ResponseGenerationResult(
+            response_text=f"Response for {request.appraisal}.",
+            response_vocal_direction="Calm.",
+        )
+
+    monkeypatch.setattr(script, "generate_response", fake_generate_response)
+
+    dataset = script.generate_axis(
+        SimpleNamespace(),
+        contrast_id="wanted_vs_unwanted",
+        target_count=1,
+        batch_size=1,
+        max_batches=2,
+        output_dir=tmp_path,
+        model="test-model",
+        max_output_tokens=512,
+    )
+
+    assert reviewed_utterances == [rejected.utterance, accepted.utterance]
+    assert dataset.candidate_calls == 2
+    assert dataset.candidate_review_calls == 2
+    assert dataset.response_goal_calls == 2
+    assert len(goal_calls) == 2
+    assert all(request.utterance == accepted.utterance for request in goal_calls)
+    assert len(response_calls) == 2
+    assert dataset.pairs[0].utterance == accepted.utterance
+
+
 def test_response_failure_does_not_checkpoint_partial_pair(tmp_path, monkeypatch):
     candidate = make_pair()
     original_candidate = candidate.model_dump()
@@ -532,6 +599,7 @@ def test_response_failure_does_not_checkpoint_partial_pair(tmp_path, monkeypatch
     stored = json.loads(path.read_text(encoding="utf-8"))
     assert stored["completed_pair_count"] == 0
     assert stored["candidate_calls"] == 0
+    assert stored["candidate_review_calls"] == 0
     assert stored["response_goal_calls"] == 0
     assert stored["response_calls"] == 0
     assert stored["pairs"] == []
@@ -590,6 +658,7 @@ def test_all_mode_failure_preserves_completed_pair_only(tmp_path, monkeypatch):
     )
     assert stored["completed_pair_count"] == 1
     assert stored["candidate_calls"] == 1
+    assert stored["candidate_review_calls"] == 1
     assert stored["response_goal_calls"] == 2
     assert stored["response_calls"] == 4
     assert len(stored["pairs"]) == 1

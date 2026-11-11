@@ -42,6 +42,11 @@ from agentic_generation.contrastive.response_goals import (
 from agentic_generation.contrastive.response_goals import (
     SYSTEM_PROMPT as RESPONSE_GOALS_SYSTEM_PROMPT,
 )
+from agentic_generation.contrastive.review import (
+    CONTRASTIVE_REVIEW_PROMPT_VERSION,
+    CONTRASTIVE_REVIEW_SYSTEM_PROMPT,
+    review_contrastive_pair,
+)
 
 NonEmptyText = Annotated[str, Field(min_length=1)]
 DEFAULT_OUTPUT_DIR = Path("results/contrastive")
@@ -127,6 +132,8 @@ class AxisDataset(BaseModel):
     catalog_version: NonEmptyText
     candidate_prompt_version: NonEmptyText
     candidate_prompt_hash: NonEmptyText
+    candidate_review_prompt_version: NonEmptyText
+    candidate_review_prompt_hash: NonEmptyText
     response_goals_prompt_version: NonEmptyText
     response_goals_prompt_hash: NonEmptyText
     response_prompt_version: NonEmptyText
@@ -136,6 +143,7 @@ class AxisDataset(BaseModel):
     created_at: NonEmptyText
     updated_at: NonEmptyText
     candidate_calls: int = Field(ge=0)
+    candidate_review_calls: int = Field(ge=0)
     response_goal_calls: int = Field(ge=0)
     response_calls: int = Field(ge=0)
     pairs: list[DatasetPair]
@@ -207,6 +215,8 @@ def _new_dataset(
         catalog_version=CATALOG_VERSION,
         candidate_prompt_version=CANDIDATE_PROMPT_VERSION,
         candidate_prompt_hash=_prompt_hash(CANDIDATE_SYSTEM_PROMPT),
+        candidate_review_prompt_version=CONTRASTIVE_REVIEW_PROMPT_VERSION,
+        candidate_review_prompt_hash=_prompt_hash(CONTRASTIVE_REVIEW_SYSTEM_PROMPT),
         response_goals_prompt_version=RESPONSE_GOALS_PROMPT_VERSION,
         response_goals_prompt_hash=_prompt_hash(RESPONSE_GOALS_SYSTEM_PROMPT),
         response_prompt_version=RESPONSE_GENERATION_PROMPT_VERSION,
@@ -218,6 +228,7 @@ def _new_dataset(
         created_at=timestamp,
         updated_at=timestamp,
         candidate_calls=0,
+        candidate_review_calls=0,
         response_goal_calls=0,
         response_calls=0,
         pairs=[],
@@ -249,6 +260,8 @@ def _load_or_create_dataset(
         "catalog_version",
         "candidate_prompt_version",
         "candidate_prompt_hash",
+        "candidate_review_prompt_version",
+        "candidate_review_prompt_hash",
         "response_goals_prompt_version",
         "response_goals_prompt_hash",
         "response_prompt_version",
@@ -323,6 +336,22 @@ def _generate_public_response_goals(
         max_output_tokens,
     )
     return list(result.response_goals)
+
+
+def _has_consistent_shared_event(
+    client,
+    *,
+    pair,
+    model: str,
+    max_output_tokens: int,
+) -> bool:
+    review = review_contrastive_pair(
+        client,
+        pair,
+        model,
+        max_output_tokens,
+    )
+    return review.pair.event_consistency.verdict == "pass"
 
 
 def _realize_pair(
@@ -445,6 +474,15 @@ def generate_axis(
             normalized = _normalize(candidate.utterance)
             if normalized in seen_utterances:
                 continue
+            event_is_consistent = _has_consistent_shared_event(
+                client,
+                pair=candidate,
+                model=model,
+                max_output_tokens=max_output_tokens,
+            )
+            dataset.candidate_review_calls += 1
+            if not event_is_consistent:
+                continue
             pair_id = f"{contrast_id}__{dataset.completed_pair_count + 1:03d}"
             realized, response_goal_calls, response_calls = _realize_pair(
                 client,
@@ -482,6 +520,7 @@ def build_dry_run(
         "target_pairs_per_axis": target_count,
         "total_target_pairs": target_count * len(contrast_ids),
         "minimum_candidate_calls": ceil(target_count / batch_size) * len(contrast_ids),
+        "minimum_candidate_review_calls": target_count * len(contrast_ids),
         "response_goal_calls": target_count * 2 * len(contrast_ids),
         "output_files": [
             str(_dataset_path(output_dir, contrast_id)) for contrast_id in contrast_ids
