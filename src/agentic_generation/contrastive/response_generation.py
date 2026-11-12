@@ -1,10 +1,11 @@
 """Generate one assistant response from a selected contrastive response goal."""
 
 import json
+import re
 from typing import Annotated
 
 from openai import OpenAI
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from agentic_generation.openai_adapter import GenerationError
 
@@ -63,6 +64,12 @@ purpose where possible without assuming those facts. If that is not possible,
 give a brief response grounded in the utterance and appraisal.
 """
 NonEmptyText = Annotated[str, Field(min_length=1)]
+MAX_GENERATION_ATTEMPTS = 2
+
+
+def _sentence_count(value: str) -> int:
+    endings = re.findall(r"""[.!?]+["'”’)\]]*(?=\s|$)""", value)
+    return max(1, len(endings))
 
 
 class ResponseGenerationRequest(BaseModel):
@@ -83,6 +90,17 @@ class ResponseGenerationResult(BaseModel):
     response_text: NonEmptyText
     response_vocal_direction: NonEmptyText
 
+    @field_validator("response_text")
+    @classmethod
+    def response_text_is_brief(cls, value: str) -> str:
+        if "\n" in value or "\r" in value:
+            raise ValueError("response_text must not contain line breaks")
+        if _sentence_count(value) > 2:
+            raise ValueError("response_text must contain at most two sentences")
+        if value.count("?") > 1:
+            raise ValueError("response_text must contain at most one question")
+        return value
+
 
 def generate_response(
     client: OpenAI,
@@ -91,31 +109,36 @@ def generate_response(
     max_output_tokens: int,
 ) -> ResponseGenerationResult:
     """Generate one structured response candidate without managing the client."""
-    try:
-        response = client.responses.parse(
-            model=model,
-            instructions=SYSTEM_PROMPT,
-            input=[
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        request.model_dump(exclude_none=True),
-                        ensure_ascii=False,
-                    ),
-                }
-            ],
-            text_format=ResponseGenerationResult,
-            store=False,
-            max_output_tokens=max_output_tokens,
-        )
-    except ValidationError as error:
-        raise GenerationError(
-            "Assistant response generation returned invalid structured output"
-        ) from error
+    for attempt in range(MAX_GENERATION_ATTEMPTS):
+        try:
+            response = client.responses.parse(
+                model=model,
+                instructions=SYSTEM_PROMPT,
+                input=[
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            request.model_dump(exclude_none=True),
+                            ensure_ascii=False,
+                        ),
+                    }
+                ],
+                text_format=ResponseGenerationResult,
+                store=False,
+                max_output_tokens=max_output_tokens,
+            )
+        except ValidationError as error:
+            if attempt + 1 < MAX_GENERATION_ATTEMPTS:
+                continue
+            raise GenerationError(
+                "Assistant response generation returned invalid structured output"
+            ) from error
 
-    if response.status != "completed" or not isinstance(
-        response.output_parsed, ResponseGenerationResult
-    ):
-        raise GenerationError("No complete, valid assistant response was returned")
+        if response.status != "completed" or not isinstance(
+            response.output_parsed, ResponseGenerationResult
+        ):
+            raise GenerationError("No complete, valid assistant response was returned")
 
-    return response.output_parsed
+        return response.output_parsed
+
+    raise AssertionError("response generation attempts were exhausted")
