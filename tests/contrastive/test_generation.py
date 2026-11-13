@@ -69,13 +69,11 @@ def make_pair(
                 appraisal=appraisals[0],
                 private_context="The speaker wanted the responsibility.",
                 vocal_direction="Quietly pleased.",
-                response_goals=["Acknowledge the opportunity.", "Ask what appeals to them."],
             ),
             ContrastCondition(
                 appraisal=appraisals[1],
                 private_context="The speaker did not want more responsibility.",
                 vocal_direction="Tired and weighed down.",
-                response_goals=["Acknowledge the pressure.", "Ask what support is available."],
             ),
         ],
     )
@@ -156,13 +154,14 @@ def test_sends_only_selected_contrast_and_count_in_one_structured_request():
     assert responses.create_calls == []
 
 
-def test_v3_prompt_emphasizes_natural_shared_utterances_and_situation_diversity():
-    assert PROMPT_VERSION == "contrastive-generation-v3"
+def test_v4_prompt_emphasizes_natural_shared_utterances_without_response_goals():
+    assert PROMPT_VERSION == "contrastive-generation-v4"
     assert "DESIGN THE SITUATION BEFORE WRITING THE UTTERANCE" in SYSTEM_PROMPT
     assert "WRITE A NATURAL SHARED UTTERANCE" in SYSTEM_PROMPT
     assert "BUILD A MEANINGFULLY VARIED BATCH" in SYSTEM_PROMPT
     assert "Preserve what the speaker is doing conversationally." in SYSTEM_PROMPT
     assert "Replacing an object, name, location, label, or decoration" in SYSTEM_PROMPT
+    assert "Do not generate response goals or assistant replies at this stage." in SYSTEM_PROMPT
 
 
 def test_cli_records_current_prompt_version_and_actual_prompt_hash(

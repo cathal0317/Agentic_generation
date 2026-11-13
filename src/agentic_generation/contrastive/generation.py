@@ -16,7 +16,7 @@ from agentic_generation.contrastive.catalog import CATALOG
 from agentic_generation.contrastive.models import ContrastivePair
 from agentic_generation.openai_adapter import GenerationError
 
-PROMPT_VERSION = "contrastive-generation-v3"
+PROMPT_VERSION = "contrastive-generation-v4"
 SYSTEM_PROMPT = """Generate candidate utterance pairs for a speech-to-speech
 emotion-adaptation dataset.
 
@@ -151,32 +151,9 @@ pitch movement, or tension. Do not automatically add laughter to every
 positive condition or slow, low delivery to every negative condition.
 Do not encode new dialogue or hidden facts in the direction.
 
-response_goals:
-Provide at least two distinct alternative directions for the
-assistant's immediately following turn. Each goal must describe one
-independently usable conversational move, not a sequence of moves.
-
-Use only the shared utterance and supplied broad appraisal when
-writing these goals. Do not assert private facts or presuppose them
-in questions. An unknown cause does not automatically require asking
-the speaker to explain it.
-
-Choose a move that serves this particular conversation. Brief
-acknowledgment, interest, clarification, or exploration may be suitable.
-Do not use acknowledgment followed by a question as a default pattern.
-A brief reaction can be complete. Ask a question when its answer has
-a concrete conversational purpose.
-
-Do not intensify the appraisal into an unsupported judgment about
-harm, hostility, humiliation, or another person's motives.
-Do not force distinct response forms merely for variety.
-
-Preserve the speaker's role and request or action direction.
-Assume a conversational assistant with no physical presence, shared
-workplace role, or external-action tools.
-
-Keep goals abstract and concise. Do not write exact assistant
-responses, quoted templates, or menus of tasks.
+Do not generate response goals or assistant replies at this stage.
+Those are generated separately only after the shared utterance and both
+appraisal conditions pass review.
 
 OUTPUT
 
