@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from agentic_generation.openai_adapter import GenerationError
 
-RESPONSE_GENERATION_PROMPT_VERSION = "response-generation-v2"
+RESPONSE_GENERATION_PROMPT_VERSION = "response-generation-v3"
 SYSTEM_PROMPT = """Generate one possible immediate assistant reply.
 
 Use only the supplied utterance, appraisal, and response_goal when provided.
@@ -20,6 +20,14 @@ not additional factual evidence. Do not assume the goal is correct. Never repeat
 unsupported facts merely because they appear in the goal.
 If no response_goal is provided, choose one appropriate conversational move
 from the utterance and appraisal.
+
+Preserve the speaker's role, the other participants' roles, ownership, and the
+direction of requests or actions.
+Do not turn a request made by the speaker into a report that someone made that
+request to the speaker, or vice versa.
+A response_goal is also not authority for changing participant roles.
+If the roles or appraisal target remain unclear, choose a response that does
+not commit to a specific role assignment.
 
 Respond to the speaker's current stance toward the stated event.
 Do not infer past wishes, requests, hidden causes, or specific circumstances.

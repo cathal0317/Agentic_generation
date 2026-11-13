@@ -22,12 +22,14 @@ ReviewDecision = Literal[
     "ready_for_audio_review",
 ]
 
-CONTRASTIVE_REVIEW_PROMPT_VERSION = "contrastive-review-v1"
+CONTRASTIVE_REVIEW_PROMPT_VERSION = "contrastive-review-v2"
 CONTRASTIVE_REVIEW_SYSTEM_PROMPT = """Review one contrastive candidate without rewriting it.
 
 Evaluate every criterion defined by the required ContrastiveReview output.
 For every CriterionResult, return pass, fail, or uncertain with a brief reason.
 Use evidence only when it is needed to support the judgment.
+Preserve participant roles, action or request direction, ownership, and the
+speaker's appraisal target when comparing conditions and reviewing goals.
 
 Private context is reviewer-only evidence. Do not fail a response goal merely
 because the assistant could not observe a supporting fact in private_context,
@@ -159,12 +161,16 @@ class PairReview(BaseModel):
 
     event_consistency: CriterionResult = Field(
         description=(
-            "Whether both private contexts preserve the same objective event and outcome; "
+            "Whether both private contexts preserve the same objective event and outcome, "
+            "including participant roles, action or request direction, and ownership; "
             "preferences may differ, but outcomes may not."
         )
     )
     natural_contrast: CriterionResult = Field(
-        description="Whether both appraisals apply naturally to the same utterance."
+        description=(
+            "Whether both appraisals apply naturally to the same utterance without changing "
+            "the speaker's role or appraisal target."
+        )
     )
     vocal_contrast_plausibility: CriterionResult = Field(
         description=(
@@ -191,8 +197,9 @@ class GoalReview(BaseModel):
             "Whether the goal is supported by or compatible with the utterance, appraisal, or "
             "that condition's private context. Do not fail a goal only because its supporting "
             "fact was not observable to the assistant, and do not require use of private context. "
-            "Claims unsupported by these inputs, contradictions, and presupposed unknown facts "
-            "may fail. Open questions are allowed."
+            "The goal must preserve the speaker's role, participant relationships, ownership, "
+            "and action or request direction. Claims unsupported by these inputs, contradictions, "
+            "and presupposed unknown facts may fail. Open questions are allowed."
         )
     )
     single_action: CriterionResult = Field(
