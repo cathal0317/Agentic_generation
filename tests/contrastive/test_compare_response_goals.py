@@ -115,9 +115,12 @@ def test_one_case_makes_three_isolated_calls_with_common_settings(input_data):
     assert output["prompt_hash"] == hashlib.sha256(SYSTEM_PROMPT.encode("utf-8")).hexdigest()
 
 
-def test_v2_prompt_contains_requested_safety_additions():
-    assert comparison.RESPONSE_GENERATION_PROMPT_VERSION == "response-generation-v2"
+def test_v3_prompt_contains_shared_safety_and_role_rules():
+    assert comparison.RESPONSE_GENERATION_PROMPT_VERSION == "response-generation-v3"
     assert comparison.SYSTEM_PROMPT == SYSTEM_PROMPT
+    assert "Preserve the speaker's role, the other participants' roles" in (
+        comparison.SYSTEM_PROMPT
+    )
     assert "Do not invent the cause of the appraisal" in comparison.SYSTEM_PROMPT
     assert "motives, character,\nor likely performance" in comparison.SYSTEM_PROMPT
     assert "Acknowledgment does not require reassurance, advice, or a positive reframing." in (

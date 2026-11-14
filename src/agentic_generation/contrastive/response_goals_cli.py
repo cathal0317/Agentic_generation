@@ -12,7 +12,6 @@ from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agentic_generation.config import GenerationSettings
-from agentic_generation.contrastive.models import ContrastivePair
 from agentic_generation.contrastive.response_goals import (
     RESPONSE_GOALS_PROMPT_VERSION,
     SYSTEM_PROMPT,
@@ -30,12 +29,27 @@ class _SourceRun(BaseModel):
     id: NonEmptyText
 
 
+class _SourceCondition(BaseModel):
+    model_config = ConfigDict(extra="allow", strict=True, str_strip_whitespace=True)
+
+    appraisal: NonEmptyText
+    response_goals: list[NonEmptyText] | None = None
+
+
+class _SourcePair(BaseModel):
+    model_config = ConfigDict(extra="allow", strict=True, str_strip_whitespace=True)
+
+    utterance: NonEmptyText
+    appraisal_axis: NonEmptyText
+    conditions: list[_SourceCondition] = Field(min_length=2, max_length=2)
+
+
 class _SourceArtifact(BaseModel):
     model_config = ConfigDict(extra="allow", strict=True, str_strip_whitespace=True)
 
     status: Literal["completed"]
     run: _SourceRun
-    pairs: list[ContrastivePair] = Field(min_length=1)
+    pairs: list[_SourcePair] = Field(min_length=1)
 
 
 def _load_source_artifact(path: Path) -> _SourceArtifact | None:

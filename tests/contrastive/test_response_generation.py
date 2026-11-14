@@ -76,6 +76,40 @@ def test_request_and_result_strip_surrounding_whitespace():
     }
 
 
+@pytest.mark.parametrize(
+    "response_text",
+    [
+        "First sentence. Second sentence. Third sentence.",
+        "What happened? What do you want?",
+        "First line.\nSecond line.",
+        "First line.\rSecond line.",
+    ],
+)
+def test_result_rejects_response_text_over_format_caps(response_text):
+    with pytest.raises(ValidationError):
+        ResponseGenerationResult(
+            response_text=response_text,
+            response_vocal_direction="Calm and concise.",
+        )
+
+
+@pytest.mark.parametrize(
+    "response_text",
+    [
+        "That sounds difficult.",
+        "That sounds difficult. What happened?",
+        "That sounds difficult",
+    ],
+)
+def test_result_accepts_at_most_two_sentences_and_one_question(response_text):
+    result = ResponseGenerationResult(
+        response_text=response_text,
+        response_vocal_direction="Calm and concise.",
+    )
+
+    assert result.response_text == response_text
+
+
 def test_request_allows_omitted_or_none_response_goal():
     omitted = ResponseGenerationRequest(
         utterance="They moved the meeting to Friday.",
@@ -201,6 +235,7 @@ def test_sends_only_allowed_payload_in_one_structured_request(
     assert len(responses.parse_calls) == 1
     call = responses.parse_calls[0]
     assert call["model"] == "response-model"
+    assert call["instructions"] == SYSTEM_PROMPT
     assert call["max_output_tokens"] == 384
     assert call["text_format"] is ResponseGenerationResult
     assert call["store"] is False
@@ -224,17 +259,25 @@ def test_omits_absent_goal_from_provider_payload(generation_result, goal_argumen
     generate_response(FakeClient(responses), request, "response-model", 384)
 
     assert len(responses.parse_calls) == 1
-    assert json.loads(responses.parse_calls[0]["input"][0]["content"]) == {
+    call = responses.parse_calls[0]
+    assert call["instructions"] == SYSTEM_PROMPT
+    assert json.loads(call["input"][0]["content"]) == {
         "utterance": "They moved the meeting to Friday.",
         "appraisal": "wanted",
     }
     assert responses.create_calls == []
 
 
-def test_v2_prompt_contains_shared_goal_and_no_goal_rules():
-    assert RESPONSE_GENERATION_PROMPT_VERSION == "response-generation-v2"
+def test_v3_prompt_contains_shared_goal_and_role_preservation_rules():
+    assert RESPONSE_GENERATION_PROMPT_VERSION == "response-generation-v3"
     assert "If a response_goal is provided" in SYSTEM_PROMPT
     assert "If no response_goal is provided" in SYSTEM_PROMPT
+    assert "Preserve the speaker's role, the other participants' roles" in SYSTEM_PROMPT
+    assert "Do not turn a request made by the speaker into a report" in SYSTEM_PROMPT
+    assert "A response_goal is also not authority for changing participant roles." in (
+        SYSTEM_PROMPT
+    )
+    assert "If the roles or appraisal target remain unclear" in SYSTEM_PROMPT
     assert "Do not invent the cause of the appraisal" in SYSTEM_PROMPT
     assert "Acknowledgment does not require reassurance, advice, or a positive reframing." in (
         SYSTEM_PROMPT
@@ -288,7 +331,39 @@ def test_converts_parse_validation_error_safely(generation_request):
         generate_response(FakeClient(responses), generation_request, "model", 256)
 
     assert "PRIVATE_INPUT_M4" not in str(caught_error.value)
-    assert len(responses.parse_calls) == 1
+    assert len(responses.parse_calls) == 2
+    assert responses.create_calls == []
+
+
+def test_retries_one_validation_failure(generation_request, generation_result):
+    class RetryResponses(FakeResponses):
+        def parse(self, **kwargs):
+            self.parse_calls.append(kwargs)
+            if len(self.parse_calls) == 1:
+                raise ValidationError.from_exception_data(
+                    "ResponseGenerationResult",
+                    [
+                        {
+                            "type": "value_error",
+                            "loc": ("response_text",),
+                            "input": "One. Two. Three.",
+                            "ctx": {"error": ValueError("too many sentences")},
+                        }
+                    ],
+                )
+            return SimpleNamespace(status="completed", output_parsed=generation_result)
+
+    responses = RetryResponses()
+
+    result = generate_response(
+        FakeClient(responses),
+        generation_request,
+        "response-model",
+        384,
+    )
+
+    assert result == generation_result
+    assert len(responses.parse_calls) == 2
     assert responses.create_calls == []
 
 

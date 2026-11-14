@@ -16,10 +16,6 @@ def pair_data():
                 "appraisal": "opportunity",
                 "private_context": "The speaker wanted an opportunity to lead.",
                 "vocal_direction": "Quietly proud, with restrained excitement.",
-                "response_goals": [
-                    "Acknowledge the opportunity.",
-                    "Invite the speaker to share what they are looking forward to.",
-                ],
             },
             {
                 "appraisal": "burden",
@@ -27,10 +23,6 @@ def pair_data():
                     "The speaker is already overworked and did not want the responsibility."
                 ),
                 "vocal_direction": "Tired and overwhelmed.",
-                "response_goals": [
-                    "Acknowledge the added pressure.",
-                    "Ask whether support or flexibility is available.",
-                ],
             },
         ],
     }
@@ -53,7 +45,6 @@ def test_strips_leading_and_trailing_whitespace():
     data["conditions"][0]["appraisal"] = " opportunity "
     data["conditions"][0]["private_context"] = "  Wanted a chance to lead. "
     data["conditions"][0]["vocal_direction"] = " Quietly proud. "
-    data["conditions"][0]["response_goals"] = [" Acknowledge the opportunity. "]
 
     pair = ContrastivePair.model_validate(data)
 
@@ -62,7 +53,6 @@ def test_strips_leading_and_trailing_whitespace():
     assert pair.conditions[0].appraisal == "opportunity"
     assert pair.conditions[0].private_context == "Wanted a chance to lead."
     assert pair.conditions[0].vocal_direction == "Quietly proud."
-    assert pair.conditions[0].response_goals == ["Acknowledge the opportunity."]
 
 
 def test_rejects_blank_utterance():
@@ -85,14 +75,6 @@ def test_rejects_condition_count_other_than_two(condition_count):
 def test_rejects_missing_required_condition_field():
     data = pair_data()
     del data["conditions"][0]["vocal_direction"]
-
-    with pytest.raises(ValidationError):
-        ContrastivePair.model_validate(data)
-
-
-def test_rejects_empty_response_goals():
-    data = pair_data()
-    data["conditions"][0]["response_goals"] = []
 
     with pytest.raises(ValidationError):
         ContrastivePair.model_validate(data)
